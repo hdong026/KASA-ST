@@ -101,19 +101,28 @@ class KASA_v2(nn.Module):
 
         # Forecast-side spectral residual calibration (4th channel prior template).
         self.use_prior_residual = model_args.get("use_prior_residual", True)
+        self.use_spatial_retention = model_args.get("use_spatial_retention", True)
         if self.input_dim > 3:
-            # Localized residual mapper: [B, output_len, N, 1] -> [B, output_len, N, 1]
-            self.prior_mapper = SimpleKANLinear(1, 1)
-            self.prior_kan = self.prior_mapper  # backward-compat alias for old checkpoints
+            prior_mapper_type = model_args.get("prior_mapper_type", "kan")
+            if prior_mapper_type == "linear":
+                self.prior_mapper = nn.Linear(1, 1)
+            elif prior_mapper_type == "mlp":
+                self.prior_mapper = nn.Sequential(
+                    nn.Linear(1, 8),
+                    nn.SiLU(),
+                    nn.Linear(8, 1),
+                )
+            else:
+                self.prior_mapper = SimpleKANLinear(1, 1)
             # Map history prior [B, input_len, N, 1] -> forecast prior [B, output_len, N, 1]
             self.prior_time_proj = nn.Conv2d(
                 in_channels=self.input_len,
                 out_channels=self.output_len,
                 kernel_size=(1, 1),
             )
-            # Horizon-wise gate; init small so residual starts near zero after sigmoid.
+            prior_gate_init = model_args.get("prior_gate_init", 0.0)
             self.prior_residual_gate = nn.Parameter(
-                torch.full((1, self.output_len, 1, 1), -2.0)
+                torch.full((1, self.output_len, 1, 1), prior_gate_init)
             )
 
         # Self-diffusion retention gate for retention-regulated spatial diffusion.
@@ -122,13 +131,49 @@ class KASA_v2(nn.Module):
             nn.ReLU(),
             nn.Linear(16, 1),
         )
-        nn.init.constant_(self.retention_gate[-1].bias, 1.0)
+        retention_gate_bias = model_args.get("retention_gate_bias", 0.0)
+        nn.init.constant_(self.retention_gate[-1].bias, retention_gate_bias)
+
+    @property
+    def prior_kan(self):
+        """Backward-compat alias; not registered to avoid duplicate state_dict keys."""
+        return self.prior_mapper
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load legacy checkpoints; allow missing new FoRC-ST modules."""
+        remapped = {}
+        for key, value in state_dict.items():
+            if key.startswith("prior_kan."):
+                key = "prior_mapper." + key[len("prior_kan."):]
+            remapped[key] = value
+
+        incompatible = super().load_state_dict(remapped, strict=False)
+        allowed_missing = {
+            "prior_time_proj.weight",
+            "prior_time_proj.bias",
+            "prior_residual_gate",
+            "retention_gate.0.weight",
+            "retention_gate.0.bias",
+            "retention_gate.2.weight",
+            "retention_gate.2.bias",
+        }
+        missing = set(incompatible.missing_keys) - allowed_missing
+        if missing:
+            raise RuntimeError(f"Missing unexpected keys in state_dict: {sorted(missing)}")
+        unexpected = [
+            k for k in incompatible.unexpected_keys
+            if not k.startswith("prior_kan.")
+        ]
+        if strict and unexpected:
+            raise RuntimeError(f"Unexpected keys in state_dict: {unexpected}")
+        return incompatible
 
     def _get_forecast_prior(self, history_data, future_data=None):
         """Build forecast-side prior template [B, output_len, N, 1].
 
         Uses future known covariate channel 3 when the runner provides it;
-        otherwise projects the history prior to the forecast horizon.
+        otherwise reuses history prior when input_len == output_len, or projects
+        the history prior to the forecast horizon when lengths differ.
         """
         if future_data is not None and future_data.shape[-1] > 3:
             prior = future_data[..., 3:4]
@@ -136,20 +181,11 @@ class KASA_v2(nn.Module):
                 return prior.to(dtype=history_data.dtype, device=history_data.device)
 
         prior_hist = history_data[..., 3:4]  # [B, input_len, N, 1]
+        if prior_hist.shape[1] == self.output_len:
+            return prior_hist.to(dtype=history_data.dtype, device=history_data.device)
+
         prior = self.prior_time_proj(prior_hist)  # [B, output_len, N, 1]
         return prior
-
-    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
-                              missing_keys, unexpected_keys, error_msgs):
-        legacy_prefix = prefix + "prior_kan."
-        mapper_prefix = prefix + "prior_mapper."
-        for key in list(state_dict.keys()):
-            if key.startswith(legacy_prefix):
-                state_dict[mapper_prefix + key[len(legacy_prefix):]] = state_dict.pop(key)
-        super()._load_from_state_dict(
-            state_dict, prefix, local_metadata, strict,
-            missing_keys, unexpected_keys, error_msgs,
-        )
 
     def forward(self, history_data: torch.Tensor, future_data: torch.Tensor = None,
                 batch_seen: int = 0, epoch: int = 0, train: bool = True, **kwargs) -> torch.Tensor:
@@ -189,18 +225,22 @@ class KASA_v2(nn.Module):
         # Base Output (SOTA Performance Baseline)
         output = patch_predict + downsamp_predict + res_out
 
-        # Retention-regulated spatial diffusion with explicit self-state retention.
+        # Retention-regulated spatial diffusion (residual-gated diffusion).
         history_flow = history_data[..., 0]  # [B, input_len, N]
-        diff_output = self.spatial_module.diffuse_prediction(output, history_flow)  # [B, output_len, N, 1]
-        diffusion_alpha = self.spatial_module.get_diffusion_alpha()
-        if diffusion_alpha is not None:
-            diff_output = output + diffusion_alpha * (diff_output - output)
+        if self.use_spatial_retention:
+            diff_output = self.spatial_module.diffuse_prediction(output, history_flow)  # [B, output_len, N, 1]
+            diffusion_alpha = self.spatial_module.get_diffusion_alpha()
+            if diffusion_alpha is None:
+                diffusion_alpha = 1.0
 
-        gate_input = torch.cat(
-            [output, diff_output, torch.abs(output - diff_output)], dim=-1
-        )  # [B, output_len, N, 3]
-        gamma = torch.sigmoid(self.retention_gate(gate_input))  # [B, output_len, N, 1]
-        output = gamma * output + (1.0 - gamma) * diff_output
+            gate_input = torch.cat(
+                [output, diff_output, torch.abs(output - diff_output)], dim=-1
+            )  # [B, output_len, N, 3]
+            spatial_gate = torch.sigmoid(self.retention_gate(gate_input))  # [B, output_len, N, 1]
+            # output = (1 - s) * output + s * diff_output, s = diffusion_alpha * spatial_gate
+            output = output + diffusion_alpha * spatial_gate * (diff_output - output)
+        else:
+            output = self.spatial_module.refine_prediction(output, history_flow)
 
         # Forecast-side spectral residual calibration (gated prior residual).
         if self.input_dim > 3 and self.use_prior_residual:

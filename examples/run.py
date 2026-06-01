@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import sys
 from argparse import ArgumentParser
@@ -10,60 +11,88 @@ import torch
 from basicts import launch_training
 from basicts.data.dataset import TimeSeriesForecastingDataset
 
-torch.set_num_threads(1) # aviod high cpu avg usage
+torch.set_num_threads(1)  # aviod high cpu avg usage
+
+
+def str2bool(v):
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    v = v.lower()
+    if v in ("true", "1", "yes", "y"):
+        return True
+    if v in ("false", "0", "no", "n"):
+        return False
+    raise ValueError(f"Invalid boolean value: {v}")
+
+
+def load_cfg(cfg_path):
+    cfg_path = os.path.abspath(cfg_path)
+    module_name = os.path.splitext(os.path.basename(cfg_path))[0]
+    spec = importlib.util.spec_from_file_location(module_name, cfg_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load config from {cfg_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if not hasattr(module, "CFG"):
+        raise AttributeError(f"Config file {cfg_path} does not define CFG")
+    return module.CFG
+
+
+def apply_model_param_overrides(cfg, args):
+    if args.prior_gate_init is not None:
+        cfg.MODEL.PARAM["prior_gate_init"] = args.prior_gate_init
+
+    if args.retention_gate_bias is not None:
+        cfg.MODEL.PARAM["retention_gate_bias"] = args.retention_gate_bias
+
+    if args.use_spatial_retention is not None:
+        cfg.MODEL.PARAM["use_spatial_retention"] = str2bool(args.use_spatial_retention)
+
+    if args.use_prior_residual is not None:
+        cfg.MODEL.PARAM["use_prior_residual"] = str2bool(args.use_prior_residual)
+
+    if args.prior_mapper_type is not None:
+        cfg.MODEL.PARAM["prior_mapper_type"] = args.prior_mapper_type
+
+    if args.tag is not None:
+        cfg.TRAIN.CKPT_SAVE_DIR = cfg.TRAIN.CKPT_SAVE_DIR + "_" + args.tag
+
+
+def print_model_param_overrides(cfg):
+    print("MODEL.PARAM overrides:")
+    print("prior_gate_init:", cfg.MODEL.PARAM.get("prior_gate_init"))
+    print("retention_gate_bias:", cfg.MODEL.PARAM.get("retention_gate_bias"))
+    print("use_spatial_retention:", cfg.MODEL.PARAM.get("use_spatial_retention"))
+    print("use_prior_residual:", cfg.MODEL.PARAM.get("use_prior_residual"))
+    print("prior_mapper_type:", cfg.MODEL.PARAM.get("prior_mapper_type"))
+    print("CKPT_SAVE_DIR:", cfg.TRAIN.CKPT_SAVE_DIR)
 
 
 def parse_args():
     parser = ArgumentParser(description="Run time series forecasting model in BasicTS framework!")
-    # parser.add_argument("-c", "--cfg", default="examples/DGCRN/DGCRN_METR-LA.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/GWNet/GWNet_METR-LA.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/STID/STID_METR-LA.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/DCRNN/DCRNN_METR-LA.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/GTS/GTS_PEMS03.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/STID/STID_PEMS-BAY.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/HI/HI_METR-LA.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Autoformer/Autoformer_METR-LA_in96_out96.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Autoformer/Autoformer_PEMS04_in96_out96.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/FEDformer/FEDformer_METR-LA_in96_out96.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Informer/Informer_ETTh1.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Informer/Informer_ETTh2.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Informer/Informer_Electricity.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Linear/Linear_ETTh1.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Linear/Linear_ETTh2.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Linear/Linear_Electricity.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Linear/DLinear_ETTh1.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Linear/DLinear_ETTh2.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Linear/DLinear_Electricity.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Linear/NLinear_Electricity.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Linear/NLinear_ETTh1.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Linear/NLinear_ETTh2.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Autoformer/Autoformer_ETTh1.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Autoformer/Autoformer_ETTh2.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Autoformer/Autoformer_Electricity.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/FEDformer/FEDformer_ETTh1.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/FEDformer/FEDformer_ETTh2.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/FEDformer/FEDformer_Electricity.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Pyraformer/Pyraformer_ETTh1.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/FEDformer/FEDformer_Weather.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/STID/STID_ExchangeRate.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/DGCRN/DGCRN_METR-LA.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/MTGNN/MTGNN_METR-LA.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/MegaCRN/MegaCRN_METR-LA.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Informer/Informer_Weather.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Pyraformer/Pyraformer_Weather.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Autoformer/atfm_04.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Autoformer/Autoformer_METR-LA.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/MLP/MLP_METR_LA.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Crossformer/Crossformer_METR-LA.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/STNorm/STNorm_HangST.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/Pyraformer/Pyraformer_METR-LA_in96_out96.py", help="training config")
-    # parser.add_argument("-c", "--cfg", default="examples/PatchTST/PatchTST_ETTh1.py", help="training config")
     parser.add_argument("-c", "--cfg", default="examples/LSTNN/LSTNN_PEMS04.py", help="training config")
     parser.add_argument("--gpus", default="1", help="visible gpus")
+    parser.add_argument("--prior_gate_init", type=float, default=None)
+    parser.add_argument("--retention_gate_bias", type=float, default=None)
+    parser.add_argument("--use_spatial_retention", type=str, default=None)
+    parser.add_argument("--use_prior_residual", type=str, default=None)
+    parser.add_argument(
+        "--prior_mapper_type",
+        type=str,
+        default=None,
+        choices=["kan", "linear", "mlp"],
+    )
+    parser.add_argument("--tag", type=str, default=None)
     return parser.parse_args()
+
 
 if __name__ == "__main__":
     args = parse_args()
 
-    launch_training(args.cfg, args.gpus)
+    cfg = load_cfg(args.cfg)
+    apply_model_param_overrides(cfg, args)
+    print_model_param_overrides(cfg)
 
+    launch_training(cfg, args.gpus)
