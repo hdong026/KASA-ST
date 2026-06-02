@@ -100,6 +100,16 @@ def generate_data(args: argparse.Namespace):
     prior_full = np.tile(smooth_weekly_profile, (l // steps_per_week + 1, 1))[:l]
     prior_norm = (prior_full - train_mean) / train_std
     prior_norm = prior_norm[..., np.newaxis]
+
+    weekly_spectral_template = ((smooth_weekly_profile - train_mean) / train_std)[..., np.newaxis].astype(np.float32)
+    template_path = os.path.join(output_dir, "weekly_spectral_template.npz")
+    np.savez(
+        template_path,
+        weekly_spectral_template=weekly_spectral_template,
+        slots_per_day=steps_per_day,
+        num_slots_per_week=steps_per_week,
+    )
+    print("Saved weekly spectral template: {0}, shape={1}".format(template_path, weekly_spectral_template.shape))
     # -------------------------------------------------------------------------
     # -------------------------------------------------------------------------
 

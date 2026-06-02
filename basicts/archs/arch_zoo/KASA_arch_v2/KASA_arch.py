@@ -1,4 +1,7 @@
 from math import ceil
+import os
+
+import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -60,7 +63,7 @@ class KASA_v2(nn.Module):
             self.spa_codebook = nn.Parameter(torch.empty(self.node_size, self.d_spa))
             nn.init.xavier_uniform_(self.spa_codebook)
 
-        # All A/B/C/D spatial implementations are centralized in gcn.py.
+        # Spatial neighbor aggregation is applied after temporal forecast output.
         self.spatial_module = ABCDSpatialModule(
             node_size=self.node_size,
             input_len=self.input_len,
@@ -88,8 +91,8 @@ class KASA_v2(nn.Module):
         )
 
         # Key 1: force input_dim=3 for submodules -> 3-channel conv in patch_emb, backbone same as LSTNN
-        encoder_input_dim = 3 
-        
+        encoder_input_dim = 3
+
         self.patch_encoder = PatchEncoder(self.td_size, self.dw_size, self.td_codebook, self.dw_codebook, self.spa_codebook, self.if_time_in_day, self.if_day_in_week, self.if_spatial,
                                           encoder_input_dim, self.patch_len, self.stride, self.d_d, self.d_td, self.d_dw, self.d_spa, self.output_len, self.num_layer)
 
@@ -99,9 +102,14 @@ class KASA_v2(nn.Module):
         # Main Residual (Standard LSTNN)
         self.residual = nn.Conv2d(in_channels=self.input_len, out_channels=self.output_len, kernel_size=(1, 1), bias=True)
 
-        # Forecast-side spectral residual calibration (4th channel prior template).
-        self.use_prior_residual = model_args.get("use_prior_residual", True)
-        self.use_spatial_retention = model_args.get("use_spatial_retention", True)
+        # Forecast-side additive spectral residual calibration.
+        self.use_spectral_residual = model_args.get(
+            "use_spectral_residual",
+            model_args.get("use_prior_residual", True),
+        )
+        self.use_template_lookup = model_args.get("use_template_lookup", True)
+        self.slots_per_day = int(model_args.get("slots_per_day", self.td_size))
+        self._has_weekly_template = False
         if self.input_dim > 3:
             prior_mapper_type = model_args.get("prior_mapper_type", "kan")
             if prior_mapper_type == "linear":
@@ -114,33 +122,61 @@ class KASA_v2(nn.Module):
                 )
             else:
                 self.prior_mapper = SimpleKANLinear(1, 1)
-            # Map history prior [B, input_len, N, 1] -> forecast prior [B, output_len, N, 1]
+            # Fallback when template lookup is unavailable and input/output lengths differ.
             self.prior_time_proj = nn.Conv2d(
                 in_channels=self.input_len,
                 out_channels=self.output_len,
                 kernel_size=(1, 1),
             )
-            prior_gate_init = model_args.get("prior_gate_init", 0.0)
-            self.prior_residual_gate = nn.Parameter(
-                torch.full((1, self.output_len, 1, 1), prior_gate_init)
-            )
-
-        # Self-diffusion retention gate for retention-regulated spatial diffusion.
-        self.retention_gate = nn.Sequential(
-            nn.Linear(3, 16),
-            nn.ReLU(),
-            nn.Linear(16, 1),
-        )
-        retention_gate_bias = model_args.get("retention_gate_bias", 0.0)
-        nn.init.constant_(self.retention_gate[-1].bias, retention_gate_bias)
+            weekly_template = self._load_weekly_spectral_template(model_args)
+            if weekly_template is not None:
+                self.register_buffer("weekly_spectral_template", weekly_template, persistent=False)
+                self._has_weekly_template = True
 
     @property
     def prior_kan(self):
         """Backward-compat alias; not registered to avoid duplicate state_dict keys."""
         return self.prior_mapper
 
+    @staticmethod
+    def _normalize_weekly_template(template, node_size):
+        """Accept [S, N, 1] or legacy [N, S, 1] layouts."""
+        if template.ndim == 2:
+            template = template[..., None]
+        if template.shape[0] == node_size and template.shape[1] != node_size:
+            template = template.permute(1, 0, 2)
+        return template.float()
+
+    def _load_weekly_spectral_template(self, model_args):
+        candidate_paths = []
+        explicit_path = model_args.get("weekly_spectral_template_path")
+        if explicit_path:
+            candidate_paths.append(explicit_path)
+
+        adj_mx_path = model_args.get("adj_mx_path")
+        if adj_mx_path:
+            dataset_dir = os.path.dirname(adj_mx_path)
+            candidate_paths.extend([
+                os.path.join(dataset_dir, "weekly_spectral_template.npz"),
+                os.path.join(dataset_dir, "spectral_prior_weekly.pt"),
+            ])
+
+        for path in candidate_paths:
+            if not path or not os.path.exists(path):
+                continue
+            if path.endswith(".npz"):
+                archive = np.load(path)
+                template = torch.from_numpy(np.array(archive["weekly_spectral_template"]))
+                if "slots_per_day" in archive:
+                    self.slots_per_day = int(archive["slots_per_day"])
+                return self._normalize_weekly_template(template, self.node_size)
+            if path.endswith(".pt"):
+                template = torch.load(path, map_location="cpu")
+                return self._normalize_weekly_template(template, self.node_size)
+        return None
+
     def load_state_dict(self, state_dict, strict=True):
-        """Load legacy checkpoints; allow missing new FoRC-ST modules."""
+        """Load legacy checkpoints; allow missing prior_time_proj for pre-June weights."""
         remapped = {}
         for key, value in state_dict.items():
             if key.startswith("prior_kan."):
@@ -151,11 +187,6 @@ class KASA_v2(nn.Module):
         allowed_missing = {
             "prior_time_proj.weight",
             "prior_time_proj.bias",
-            "prior_residual_gate",
-            "retention_gate.0.weight",
-            "retention_gate.0.bias",
-            "retention_gate.2.weight",
-            "retention_gate.2.bias",
         }
         missing = set(incompatible.missing_keys) - allowed_missing
         if missing:
@@ -163,18 +194,61 @@ class KASA_v2(nn.Module):
         unexpected = [
             k for k in incompatible.unexpected_keys
             if not k.startswith("prior_kan.")
+            and not k.startswith("prior_residual_gate")
+            and not k.startswith("retention_gate.")
         ]
         if strict and unexpected:
             raise RuntimeError(f"Unexpected keys in state_dict: {unexpected}")
         return incompatible
 
-    def _get_forecast_prior(self, history_data, future_data=None):
-        """Build forecast-side prior template [B, output_len, N, 1].
+    def _tod_dow_indices(self, tod, dow):
+        """Convert future ToD/DoW tensors to slot indices."""
+        if tod.max() <= 1.0 + 1e-6:
+            tod_idx = torch.clamp((tod * self.slots_per_day).long(), 0, self.slots_per_day - 1)
+        else:
+            tod_idx = torch.clamp(tod.long(), 0, self.slots_per_day - 1)
 
-        Uses future known covariate channel 3 when the runner provides it;
-        otherwise reuses history prior when input_len == output_len, or projects
-        the history prior to the forecast horizon when lengths differ.
+        if dow.max() <= 1.0 + 1e-6:
+            dow_idx = torch.clamp((dow * 7).long(), 0, 6)
+        else:
+            dow_idx = torch.clamp(dow.long(), 0, 6)
+        return tod_idx, dow_idx
+
+    def _lookup_future_template(self, future_data):
+        """Lookup train-only weekly spectral template using future ToD/DoW.
+
+        Args:
+            future_data: [B, output_len, N, C], channel 1=ToD, channel 2=DoW
+
+        Returns:
+            torch.Tensor: [B, output_len, N, 1]
         """
+        tod = future_data[..., 1]
+        dow = future_data[..., 2]
+        tod_idx, dow_idx = self._tod_dow_indices(tod, dow)
+        week_idx = dow_idx * self.slots_per_day + tod_idx  # [B, F, N]
+
+        template = self.weekly_spectral_template  # [S, N, 1]
+        node_idx = torch.arange(template.shape[1], device=future_data.device).view(1, 1, -1)
+        prior = template[week_idx, node_idx]  # [B, F, N, 1]
+        return prior
+
+    def _get_forecast_prior(self, history_data, future_data=None):
+        """Build forecast-side spectral template [B, output_len, N, 1]."""
+        if (
+            self.use_template_lookup
+            and self._has_weekly_template
+            and future_data is not None
+            and future_data.shape[-1] > 2
+            and future_data.shape[1] == self.output_len
+        ):
+            try:
+                return self._lookup_future_template(future_data).to(
+                    dtype=history_data.dtype, device=history_data.device
+                )
+            except Exception:
+                pass
+
         if future_data is not None and future_data.shape[-1] > 3:
             prior = future_data[..., 3:4]
             if prior.shape[1] == self.output_len:
@@ -184,16 +258,12 @@ class KASA_v2(nn.Module):
         if prior_hist.shape[1] == self.output_len:
             return prior_hist.to(dtype=history_data.dtype, device=history_data.device)
 
-        prior = self.prior_time_proj(prior_hist)  # [B, output_len, N, 1]
-        return prior
+        return self.prior_time_proj(prior_hist)  # [B, output_len, N, 1]
 
     def forward(self, history_data: torch.Tensor, future_data: torch.Tensor = None,
                 batch_seen: int = 0, epoch: int = 0, train: bool = True, **kwargs) -> torch.Tensor:
         # history_data: [B, L, N, 4]
-        
-        # A/C scheme: GCN-enhanced spatial codebook before temporal encoders.
-        enhanced_spa_emb = self.spatial_module.get_enhanced_spatial_embedding(self.spa_codebook)
-        
+
         # 1. Backbone input (first 3 channels: Flow, TOD, DOW)
         main_input = history_data[..., :3]
 
@@ -204,14 +274,14 @@ class KASA_v2(nn.Module):
         else:
             main_input_aug = main_input
 
-        # 3. Encoders Forward (Standard LSTNN)
+        # 3. Temporal encoders (no pre-temporal spatial graph enhancement)
         downsamp_input = [main_input_aug[:, i::self.stride, :, :] for i in range(self.stride)]
         downsamp_input = torch.stack(downsamp_input, dim=1)
 
-        patch_input = main_input_aug.unfold(dimension=1, size=self.patch_len, step=self.patch_len).permute(0, 1, 4, 2, 3) 
+        patch_input = main_input_aug.unfold(dimension=1, size=self.patch_len, step=self.patch_len).permute(0, 1, 4, 2, 3)
 
-        patch_predict = self.patch_encoder(patch_input, spatial_codebook=enhanced_spa_emb)
-        downsamp_predict = self.downsamp_encoder(downsamp_input, spatial_codebook=enhanced_spa_emb)
+        patch_predict = self.patch_encoder(patch_input)
+        downsamp_predict = self.downsamp_encoder(downsamp_input)
 
         # 4. Main Residual (Standard LSTNN)
         # Only use Flow (Channel 0)
@@ -222,30 +292,17 @@ class KASA_v2(nn.Module):
         if kwargs.get("return_backbone", False):
             return patch_predict + downsamp_predict
 
-        # Base Output (SOTA Performance Baseline)
+        # Base temporal forecast output
         output = patch_predict + downsamp_predict + res_out
 
-        # Retention-regulated spatial diffusion (residual-gated diffusion).
+        # Spatial neighbor aggregation after temporal encoding
         history_flow = history_data[..., 0]  # [B, input_len, N]
-        if self.use_spatial_retention:
-            diff_output = self.spatial_module.diffuse_prediction(output, history_flow)  # [B, output_len, N, 1]
-            diffusion_alpha = self.spatial_module.get_diffusion_alpha()
-            if diffusion_alpha is None:
-                diffusion_alpha = 1.0
+        output = self.spatial_module.refine_prediction(output, history_flow)
 
-            gate_input = torch.cat(
-                [output, diff_output, torch.abs(output - diff_output)], dim=-1
-            )  # [B, output_len, N, 3]
-            spatial_gate = torch.sigmoid(self.retention_gate(gate_input))  # [B, output_len, N, 1]
-            # output = (1 - s) * output + s * diff_output, s = diffusion_alpha * spatial_gate
-            output = output + diffusion_alpha * spatial_gate * (diff_output - output)
-        else:
-            output = self.spatial_module.refine_prediction(output, history_flow)
-
-        # Forecast-side spectral residual calibration (gated prior residual).
-        if self.input_dim > 3 and self.use_prior_residual:
+        # Forecast-side additive spectral residual: Y_hat = Y + psi(P_template)
+        if self.input_dim > 3 and self.use_spectral_residual:
             prior_data = self._get_forecast_prior(history_data, future_data)  # [B, output_len, N, 1]
             prior_residual = self.prior_mapper(prior_data)  # [B, output_len, N, 1]
-            output = output + torch.sigmoid(self.prior_residual_gate) * prior_residual
+            output = output + prior_residual
 
         return output

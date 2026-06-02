@@ -263,68 +263,34 @@ class ABCDSpatialModule(nn.Module):
             return emb
         return None
 
-    def get_diffusion_alpha(self):
-        """Return active diffusion strength for the current spatial scheme, or None."""
-        if self.use_hybrid_graph:
-            return self.hybrid_alpha
-        if self.use_dynamic_spatial:
-            return self.dyn_alpha
-        if self.use_adaptive_adj:
-            return self.adp_alpha
-        if self.use_lightweight_spatial and self.adj_mx is not None:
-            return self.light_alpha
-        return None
-
-    def diffuse_prediction(self, output, history_flow):
-        """Return pure neighbor-diffused prediction A @ output.
-
-        Args:
-            output: [B, output_len, N, 1]
-            history_flow: [B, input_len, N]
-
-        Returns:
-            torch.Tensor: [B, output_len, N, 1]
-        """
-        x = output.squeeze(-1)  # [B, output_len, N]
-
-        if self.use_hybrid_graph:
-            hybrid_adj = self._build_hybrid_adj(history_flow)
-            return apply_adj(x, hybrid_adj).unsqueeze(-1)
-
-        if self.use_dynamic_spatial:
-            dyn_adj = self._build_dynamic_adj(history_flow)
-            return apply_adj(x, dyn_adj).unsqueeze(-1)
-
-        if self.use_adaptive_adj:
-            adp_adj = self._build_adaptive_adj()
-            return apply_adj(x, adp_adj).unsqueeze(-1)
-
-        if self.use_lightweight_spatial and self.adj_mx is not None:
-            static_adj = row_normalize(self.adj_mx)
-            return apply_adj(x, static_adj).unsqueeze(-1)
-
-        return output
-
     def refine_prediction(self, output, history_flow):
-        """Apply B/C/D or adaptive-only refinement on prediction output (legacy path).
+        """Apply B/C/D or adaptive-only spatial aggregation on prediction output.
 
         Args:
             output: [B, T, N, 1]
             history_flow: [B, L, N]
         """
-        diff_output = self.diffuse_prediction(output, history_flow)
+        x = output.squeeze(-1)
 
         if self.use_hybrid_graph:
-            return output + self.hybrid_alpha * diff_output
+            hybrid_adj = self._build_hybrid_adj(history_flow)
+            neighbor_output = apply_adj(x, hybrid_adj).unsqueeze(-1)
+            return output + self.hybrid_alpha * neighbor_output
 
         if self.use_dynamic_spatial:
-            return output + self.dyn_alpha * diff_output
+            dyn_adj = self._build_dynamic_adj(history_flow)
+            neighbor_output = apply_adj(x, dyn_adj).unsqueeze(-1)
+            return output + self.dyn_alpha * neighbor_output
 
         if self.use_adaptive_adj:
-            return output + self.adp_alpha * diff_output
+            adp_adj = self._build_adaptive_adj()
+            neighbor_output = apply_adj(x, adp_adj).unsqueeze(-1)
+            return output + self.adp_alpha * neighbor_output
 
         if self.use_lightweight_spatial and self.adj_mx is not None:
-            return output + self.light_alpha * (diff_output - output)
+            static_adj = row_normalize(self.adj_mx)
+            smooth = apply_adj(x, static_adj).unsqueeze(-1) - output
+            return output + self.light_alpha * smooth
 
         return output
 

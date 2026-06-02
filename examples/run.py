@@ -41,17 +41,8 @@ def load_cfg(cfg_path):
 
 
 def apply_model_param_overrides(cfg, args):
-    if args.prior_gate_init is not None:
-        cfg.MODEL.PARAM["prior_gate_init"] = args.prior_gate_init
-
-    if args.retention_gate_bias is not None:
-        cfg.MODEL.PARAM["retention_gate_bias"] = args.retention_gate_bias
-
-    if args.use_spatial_retention is not None:
-        cfg.MODEL.PARAM["use_spatial_retention"] = str2bool(args.use_spatial_retention)
-
-    if args.use_prior_residual is not None:
-        cfg.MODEL.PARAM["use_prior_residual"] = str2bool(args.use_prior_residual)
+    if args.use_spectral_residual is not None:
+        cfg.MODEL.PARAM["use_spectral_residual"] = str2bool(args.use_spectral_residual)
 
     if args.prior_mapper_type is not None:
         cfg.MODEL.PARAM["prior_mapper_type"] = args.prior_mapper_type
@@ -62,10 +53,7 @@ def apply_model_param_overrides(cfg, args):
 
 def print_model_param_overrides(cfg):
     print("MODEL.PARAM overrides:")
-    print("prior_gate_init:", cfg.MODEL.PARAM.get("prior_gate_init"))
-    print("retention_gate_bias:", cfg.MODEL.PARAM.get("retention_gate_bias"))
-    print("use_spatial_retention:", cfg.MODEL.PARAM.get("use_spatial_retention"))
-    print("use_prior_residual:", cfg.MODEL.PARAM.get("use_prior_residual"))
+    print("use_spectral_residual:", cfg.MODEL.PARAM.get("use_spectral_residual"))
     print("prior_mapper_type:", cfg.MODEL.PARAM.get("prior_mapper_type"))
     print("CKPT_SAVE_DIR:", cfg.TRAIN.CKPT_SAVE_DIR)
 
@@ -74,10 +62,7 @@ def parse_args():
     parser = ArgumentParser(description="Run time series forecasting model in BasicTS framework!")
     parser.add_argument("-c", "--cfg", default="examples/LSTNN/LSTNN_PEMS04.py", help="training config")
     parser.add_argument("--gpus", default="1", help="visible gpus")
-    parser.add_argument("--prior_gate_init", type=float, default=None)
-    parser.add_argument("--retention_gate_bias", type=float, default=None)
-    parser.add_argument("--use_spatial_retention", type=str, default=None)
-    parser.add_argument("--use_prior_residual", type=str, default=None)
+    parser.add_argument("--use_spectral_residual", type=str, default=None)
     parser.add_argument(
         "--prior_mapper_type",
         type=str,
