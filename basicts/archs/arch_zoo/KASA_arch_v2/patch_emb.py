@@ -3,7 +3,7 @@ from math import ceil
 import torch
 from einops import rearrange
 from torch import nn
-from basicts.archs.arch_zoo.HoloST_arch.mlp import MultiLayerPerceptron
+from basicts.archs.arch_zoo.KASA_arch_v2.mlp import MultiLayerPerceptron
 
 
 class PatchEncoder(nn.Module):
