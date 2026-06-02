@@ -76,6 +76,7 @@ def generate_data(args: argparse.Namespace):
     top_k = int(len(fft_coeffs) * 0.1) 
     fft_coeffs[top_k:] = 0
     smooth_weekly_profile = np.fft.irfft(fft_coeffs, n=weekly_profile.shape[0], axis=0)
+    weekly_spectral_template = ((smooth_weekly_profile - train_mean) / train_std)[..., np.newaxis].astype(np.float32)
     
     # 3. 平铺到全长并归一化
     prior_full = np.tile(smooth_weekly_profile, (l // steps_per_week + 1, 1))[:l]
@@ -112,6 +113,16 @@ def generate_data(args: argparse.Namespace):
     data_dict["processed_data"] = processed_data
     with open(output_dir + "/data_in{0}_out{1}.pkl".format(history_seq_len, future_seq_len), "wb") as f:
         pickle.dump(data_dict, f)
+
+    npz_path = output_dir + "/data_in{0}_out{1}.npz".format(history_seq_len, future_seq_len)
+    np.savez(
+        npz_path,
+        processed_data=processed_data.astype(np.float32),
+        weekly_spectral_template=weekly_spectral_template,
+        slots_per_day=steps_per_day,
+        slots_per_week=steps_per_week,
+    )
+    print("Saved processed npz: {0}".format(npz_path))
         
     # copy adj
     if os.path.exists(args.graph_file_path):

@@ -1,4 +1,7 @@
 from math import ceil
+import os
+
+import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -108,6 +111,78 @@ class KASA_v2(nn.Module):
             # 输入: [B, T, N, 1] -> 输出: [B, T, N, 1]
             # 为了简单，我们对每个时间步做独立变换
             self.prior_kan = SimpleKANLinear(1, 1)
+            self.use_template_lookup = model_args.get("use_template_lookup", False)
+            self.debug_template_lookup = model_args.get("debug_template_lookup", False)
+            self.slots_per_day = int(model_args.get("slots_per_day", self.td_size))
+            self._template_debug_printed = False
+            if self.use_template_lookup:
+                template = self._load_weekly_template(model_args.get("data_path"))
+                if template is not None:
+                    self.register_buffer("weekly_spectral_template", template, persistent=False)
+
+    def _load_weekly_template(self, data_path):
+        if not data_path or not os.path.exists(data_path) or not str(data_path).endswith(".npz"):
+            return None
+        archive = np.load(data_path)
+        if "weekly_spectral_template" not in archive:
+            return None
+        template = torch.from_numpy(np.array(archive["weekly_spectral_template"])).float()
+        if template.ndim == 2:
+            template = template.unsqueeze(-1)
+        if "slots_per_day" in archive:
+            self.slots_per_day = int(archive["slots_per_day"])
+        return template
+
+    def _tod_dow_indices(self, tod, dow):
+        if float(tod.max()) <= 1.0 + 1e-6:
+            tod_idx = torch.floor(tod * self.slots_per_day).long()
+        else:
+            tod_idx = tod.long()
+        tod_idx = torch.clamp(tod_idx, 0, self.slots_per_day - 1)
+
+        if float(dow.max()) <= 1.0 + 1e-6:
+            dow_idx = torch.floor(dow * 7).long()
+        else:
+            dow_idx = dow.long()
+        dow_idx = torch.clamp(dow_idx, 0, 6)
+        return tod_idx, dow_idx
+
+    def _lookup_weekly_template(self, future_data):
+        """Lookup train-only weekly spectral template using future ToD/DoW."""
+        tod = future_data[..., 1]
+        dow = future_data[..., 2]
+        tod_idx, dow_idx = self._tod_dow_indices(tod, dow)
+        week_idx = dow_idx * self.slots_per_day + tod_idx
+
+        template = self.weekly_spectral_template  # [slots_per_week, N, 1]
+        node_idx = torch.arange(template.shape[1], device=future_data.device).view(1, 1, -1)
+        prior = template[week_idx, node_idx, :]  # [B, F, N, 1]
+        return prior.to(dtype=future_data.dtype, device=future_data.device)
+
+    def _print_template_debug(self, future_data, prior_lookup, history_data):
+        tod = future_data[..., 1]
+        dow = future_data[..., 2]
+        tod_idx, dow_idx = self._tod_dow_indices(tod, dow)
+        week_idx = dow_idx * self.slots_per_day + tod_idx
+        hist_prior = history_data[..., 3:4]
+
+        print("=== template lookup debug ===")
+        print(f"tod min/max: {tod.min().item():.6f} / {tod.max().item():.6f}")
+        print(f"dow min/max: {dow.min().item():.6f} / {dow.max().item():.6f}")
+        print(f"week_idx min/max: {week_idx.min().item()} / {week_idx.max().item()}")
+        print(
+            "prior_lookup mean/std/min/max: "
+            f"{prior_lookup.mean().item():.6f} / {prior_lookup.std().item():.6f} / "
+            f"{prior_lookup.min().item():.6f} / {prior_lookup.max().item():.6f}"
+        )
+        print(
+            "history prior mean/std/min/max: "
+            f"{hist_prior.mean().item():.6f} / {hist_prior.std().item():.6f} / "
+            f"{hist_prior.min().item():.6f} / {hist_prior.max().item():.6f}"
+        )
+        if future_data.shape[-1] > 3:
+            mae = torch.mean(torch.abs(prior_lookup - future_data[..., 3:4])).item()
+            print(f"MAE(prior_lookup, future_data[...,3:4]): {mae:.8f}")
     
     def forward(self, history_data: torch.Tensor, future_data: torch.Tensor, batch_seen: int, epoch: int, train: bool, **kwargs) -> torch.Tensor:
         # history_data: [B, L, N, 4]
@@ -155,7 +230,18 @@ class KASA_v2(nn.Module):
         # 🔥 关键修改 3: 加上 KAN 处理后的 Prior
         # 只有当 input_dim > 3 (即有 Prior 数据) 时才执行
         if self.input_dim > 3:
-            prior_data = history_data[..., 3:4] # [B, L, N, 1]
+            weekly_template = getattr(self, "weekly_spectral_template", None)
+            if (
+                self.use_template_lookup
+                and weekly_template is not None
+                and future_data is not None
+            ):
+                prior_data = self._lookup_weekly_template(future_data)
+                if self.debug_template_lookup and not self._template_debug_printed:
+                    self._print_template_debug(future_data, prior_data, history_data)
+                    self._template_debug_printed = True
+            else:
+                prior_data = history_data[..., 3:4]  # [B, L, N, 1]
             
             # KAN Processing: [B, L, N, 1] -> [B, L, N, 1]
             # 假设 OutputLen == InputLen

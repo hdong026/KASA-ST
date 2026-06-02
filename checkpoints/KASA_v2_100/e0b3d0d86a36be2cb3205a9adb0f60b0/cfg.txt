@@ -46,6 +46,7 @@ MODEL:
     use_hybrid_graph: True
     hybrid_alpha: 0.2
     use_lightweight_spatial: False
+    use_template_lookup: False
   FORWARD_FEATURES: [0, 1, 2, 3]
   TARGET_FEATURES: [0]
 TRAIN:
@@ -88,4 +89,4 @@ TEST:
     SHUFFLE: False
     NUM_WORKERS: 2
     PIN_MEMORY: False
-MD5: 1149d940efb0a56c3088f494845e8339
+MD5: e0b3d0d86a36be2cb3205a9adb0f60b0
