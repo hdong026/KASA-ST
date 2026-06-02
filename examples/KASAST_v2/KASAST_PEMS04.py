@@ -70,6 +70,7 @@ CFG.MODEL.PARAM = {
     "use_hybrid_graph": True,
     "hybrid_alpha": 0.2,
     "use_lightweight_spatial": False,
+    "use_template_lookup": False,
 }
 CFG.MODEL.FORWARD_FEATURES = [0, 1, 2, 3]  # traffic flow, time in day, day in week, prior
 CFG.MODEL.TARGET_FEATURES = [0]  # traffic flow

@@ -1,5 +1,6 @@
 | experiment | dataset | tag | mae | rmse | mape | source_file | source_line | status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| KASA_v2_100_pems04_claim_no_lookup | PeMS04 | claim_no_lookup | 18.1821 | 29.9294 | 0.1237 | checkpoints/KASA_v2_100_pems04_claim_no_lookup/434d5888754b43896aaf92b80cc33eef/training_log_20260602110154.log | 1810 | ok |
 | KASA_v2_100_pems04_prior_gate0_kan | PeMS04 | prior_gate0_kan | 18.1941 | 29.7142 | 0.1257 | checkpoints/KASA_v2_100_pems04_prior_gate0_kan/82677f3129ba15eb78f7effd8368bc54/training_log_20260601162125.log | 1607 | ok |
 | KASA_v2_100_pems04_forc_diffstrong_kan | PeMS04 | forc_diffstrong_kan | 18.2104 | 29.7798 | 0.1277 | checkpoints/KASA_v2_100_pems04_forc_diffstrong_kan/c818e19890d017cd37b83d0e96526479/training_log_20260601214652.log | 1946 | ok |
 | KASA_v2_100_pems04_prior_gate1_kan | PeMS04 | prior_gate1_kan | 18.2273 | 29.8089 | 0.1267 | checkpoints/KASA_v2_100_pems04_prior_gate1_kan/60679e8427ebb453e1d13ec21f9d6e56/training_log_20260601164348.log | 1942 | ok |
