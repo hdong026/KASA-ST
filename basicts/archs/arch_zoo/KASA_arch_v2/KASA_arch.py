@@ -109,8 +109,15 @@ class KASA_v2(nn.Module):
         # 🔥 关键修改 2: Prior / base / direct residual modes
         if self.input_dim > 3:
             self.residual_mode = model_args.get("residual_mode", "prior_mapper")
-            self.slots_per_day = int(model_args.get("slots_per_day", self.td_size))
-            self._direct_future_fallback_warned = False
+            self.slots_per_day = int(model_args.get("slots_per_day", 288))
+            self.debug_template_lookup = model_args.get("debug_template_lookup", False)
+            self._template_debug_printed = False
+
+            template = self._load_weekly_template(model_args.get("data_path"))
+            if template is not None:
+                self.register_buffer("weekly_spectral_template", template, persistent=False)
+            else:
+                self.weekly_spectral_template = None
 
             if self.residual_mode == "prior_mapper":
                 prior_mapper_type = model_args.get("prior_mapper_type", "kan")
@@ -127,7 +134,7 @@ class KASA_v2(nn.Module):
                 else:
                     raise ValueError(f"Unsupported prior_mapper_type: {prior_mapper_type}")
                 self.prior_mapper_type = prior_mapper_type
-            elif self.residual_mode == "base_delta_plus_prior":
+            elif self.residual_mode == "base_mapper_plus_prior":
                 base_mapper_type = model_args.get("base_mapper_type", "mlp")
                 if base_mapper_type == "mlp":
                     self.base_mapper = nn.Sequential(
@@ -142,19 +149,17 @@ class KASA_v2(nn.Module):
                 else:
                     raise ValueError(f"Unsupported base_mapper_type: {base_mapper_type}")
                 self.base_mapper_type = base_mapper_type
-                self._zero_init_base_mapper(self.base_mapper, base_mapper_type)
             elif self.residual_mode in ("direct_history_prior", "direct_future_prior"):
-                pass
+                if (
+                    self.residual_mode == "direct_future_prior"
+                    and getattr(self, "weekly_spectral_template", None) is None
+                ):
+                    raise ValueError(
+                        "direct_future_prior requires weekly_spectral_template; "
+                        "provide data_path to an npz containing weekly_spectral_template."
+                    )
             else:
                 raise ValueError(f"Unknown residual_mode: {self.residual_mode}")
-
-            if (
-                self.residual_mode == "direct_future_prior"
-                or model_args.get("use_template_lookup", False)
-            ):
-                template = self._load_weekly_template(model_args.get("data_path"))
-                if template is not None:
-                    self.register_buffer("weekly_spectral_template", template, persistent=False)
 
     def _zero_init_base_mapper(self, base_mapper, base_mapper_type):
         """Initialize base_mapper so base_delta starts near zero."""
@@ -204,6 +209,8 @@ class KASA_v2(nn.Module):
         week_idx = dow_idx * self.slots_per_day + tod_idx
 
         template = self.weekly_spectral_template  # [slots_per_week, N, 1]
+        if template is None:
+            raise ValueError("weekly_spectral_template is required for template lookup")
         node_idx = torch.arange(template.shape[1], device=future_data.device).view(1, 1, -1)
         prior = template[week_idx, node_idx, :]  # [B, F, N, 1]
         return prior.to(dtype=future_data.dtype, device=future_data.device)
@@ -282,27 +289,29 @@ class KASA_v2(nn.Module):
                 prior_data = history_data[..., 3:4]
                 prior_residual = self.prior_mapper(prior_data)
                 output = output + prior_residual
-            elif self.residual_mode == "base_delta_plus_prior":
+
+            elif self.residual_mode == "base_mapper_plus_prior":
                 prior_data = history_data[..., 3:4]
-                base_delta = self.base_mapper(output)
-                output = output + base_delta + prior_data
+                base_calibrated = self.base_mapper(output)
+                output = base_calibrated + prior_data
+
             elif self.residual_mode == "direct_history_prior":
                 prior_data = history_data[..., 3:4]
                 output = output + prior_data
+
             elif self.residual_mode == "direct_future_prior":
-                weekly_template = getattr(self, "weekly_spectral_template", None)
-                if future_data is not None and weekly_template is not None:
-                    prior_data = self._lookup_weekly_template(future_data)
-                    output = output + prior_data
-                else:
-                    if not self._direct_future_fallback_warned:
-                        print(
-                            "WARNING: direct_future_prior fallback to history prior "
-                            "(future_data or weekly_spectral_template unavailable)."
-                        )
-                        self._direct_future_fallback_warned = True
-                    prior_data = history_data[..., 3:4]
-                    output = output + prior_data
+                if future_data is None:
+                    raise ValueError("future_data is required for direct_future_prior")
+                if getattr(self, "weekly_spectral_template", None) is None:
+                    raise ValueError(
+                        "weekly_spectral_template is required for direct_future_prior"
+                    )
+                prior_data = self._lookup_weekly_template(future_data)
+                if self.debug_template_lookup and not self._template_debug_printed:
+                    self._print_template_debug(future_data, prior_data, history_data)
+                    self._template_debug_printed = True
+                output = output + prior_data
+
             else:
                 raise ValueError(f"Unknown residual_mode: {self.residual_mode}")
 
