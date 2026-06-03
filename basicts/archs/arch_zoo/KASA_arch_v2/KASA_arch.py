@@ -106,19 +106,40 @@ class KASA_v2(nn.Module):
         # Main Residual (Standard LSTNN)
         self.residual = nn.Conv2d(in_channels=self.input_len, out_channels=self.output_len, kernel_size=(1, 1), bias=True)
         
-        # 🔥 关键修改 2: 定义 KAN 旁路用于处理 Prior (第4通道)
+        # 🔥 关键修改 2: Prior / base residual mappers
         if self.input_dim > 3:
-            # 输入: [B, T, N, 1] -> 输出: [B, T, N, 1]
-            # 为了简单，我们对每个时间步做独立变换
-            self.prior_kan = SimpleKANLinear(1, 1)
-            self.use_template_lookup = model_args.get("use_template_lookup", False)
-            self.debug_template_lookup = model_args.get("debug_template_lookup", False)
-            self.slots_per_day = int(model_args.get("slots_per_day", self.td_size))
-            self._template_debug_printed = False
-            if self.use_template_lookup:
-                template = self._load_weekly_template(model_args.get("data_path"))
-                if template is not None:
-                    self.register_buffer("weekly_spectral_template", template, persistent=False)
+            self.residual_mode = model_args.get("residual_mode", "prior_mapper")
+
+            prior_mapper_type = model_args.get("prior_mapper_type", "kan")
+            if prior_mapper_type == "kan":
+                self.prior_mapper = SimpleKANLinear(1, 1)
+            elif prior_mapper_type == "mlp":
+                self.prior_mapper = nn.Sequential(
+                    nn.Linear(1, 16),
+                    nn.SiLU(),
+                    nn.Linear(16, 1),
+                )
+            elif prior_mapper_type == "linear":
+                self.prior_mapper = nn.Linear(1, 1)
+            else:
+                raise ValueError(f"Unsupported prior_mapper_type: {prior_mapper_type}")
+            self.prior_mapper_type = prior_mapper_type
+
+            if self.residual_mode == "base_mapper_plus_prior":
+                base_mapper_type = model_args.get("base_mapper_type", "mlp")
+                if base_mapper_type == "mlp":
+                    self.base_mapper = nn.Sequential(
+                        nn.Linear(1, 16),
+                        nn.SiLU(),
+                        nn.Linear(16, 1),
+                    )
+                elif base_mapper_type == "kan":
+                    self.base_mapper = SimpleKANLinear(1, 1)
+                elif base_mapper_type == "linear":
+                    self.base_mapper = nn.Linear(1, 1)
+                else:
+                    raise ValueError(f"Unsupported base_mapper_type: {base_mapper_type}")
+                self.base_mapper_type = base_mapper_type
 
     def _load_weekly_template(self, data_path):
         if not data_path or not os.path.exists(data_path) or not str(data_path).endswith(".npz"):
@@ -227,26 +248,17 @@ class KASA_v2(nn.Module):
         history_flow = history_data[..., 0]  # [B, L, N]
         output = self.spatial_module.refine_prediction(output, history_flow)
         
-        # 🔥 关键修改 3: 加上 KAN 处理后的 Prior
-        # 只有当 input_dim > 3 (即有 Prior 数据) 时才执行
+        # Residual calibration: Y_hat = phi(Y_base) + P_hist or Y_base + phi(P_hist)
         if self.input_dim > 3:
-            weekly_template = getattr(self, "weekly_spectral_template", None)
-            if (
-                self.use_template_lookup
-                and weekly_template is not None
-                and future_data is not None
-            ):
-                prior_data = self._lookup_weekly_template(future_data)
-                if self.debug_template_lookup and not self._template_debug_printed:
-                    self._print_template_debug(future_data, prior_data, history_data)
-                    self._template_debug_printed = True
+            prior_data = history_data[..., 3:4]
+
+            if self.residual_mode == "prior_mapper":
+                prior_residual = self.prior_mapper(prior_data)
+                output = output + prior_residual
+            elif self.residual_mode == "base_mapper_plus_prior":
+                base_calibrated = self.base_mapper(output)
+                output = base_calibrated + prior_data
             else:
-                prior_data = history_data[..., 3:4]  # [B, L, N, 1]
-            
-            # KAN Processing: [B, L, N, 1] -> [B, L, N, 1]
-            # 假设 OutputLen == InputLen
-            if output.shape == prior_data.shape:
-                kan_prior = self.prior_kan(prior_data)
-                output = output + kan_prior
+                raise ValueError(f"Unknown residual_mode: {self.residual_mode}")
 
         return output
