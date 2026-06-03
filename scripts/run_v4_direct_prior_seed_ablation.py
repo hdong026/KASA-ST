@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run v3 base_delta_plus_prior KAN vs MLP seed ablation with parallel GPU workers."""
+"""Run v4 direct_history_prior vs direct_future_prior seed ablation."""
 
 from __future__ import annotations
 
@@ -21,11 +21,10 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 T_CRIT_N5 = 2.776
-DEFAULT_MAPPERS = ("kan", "mlp")
+DEFAULT_VARIANTS = ("direct_history_prior", "direct_future_prior")
 DEFAULT_SEEDS = (1, 2, 3, 4, 5)
-TEMP_CFG_DIR = os.path.join(ROOT, "tmp_configs", "v3_base_delta_plus_prior")
-RUN_LOG_DIR = os.path.join(ROOT, "logs", "v3_base_delta_plus_prior")
-VARIANT_PREFIX = "v3_base_delta_plus_prior"
+TEMP_CFG_DIR = os.path.join(ROOT, "tmp_configs", "v4_direct_prior")
+RUN_LOG_DIR = os.path.join(ROOT, "logs", "v4_direct_prior")
 
 RESULT_RE = re.compile(
     r"Result\s*<\s*test\s*>:\s*\[(?P<body>.*?)\]",
@@ -39,7 +38,6 @@ MAPE_RE = re.compile(r"test_MAPE:\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
 @dataclass
 class RunResult:
     variant: str
-    mapper: str
     seed: int
     mae: Optional[float] = None
     rmse: Optional[float] = None
@@ -53,7 +51,7 @@ class RunResult:
 
 @dataclass
 class WorkerState:
-    mapper: str
+    variant: str
     gpu: str
     results: List[RunResult] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -61,7 +59,7 @@ class WorkerState:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compare v3 base_delta_plus_prior KAN vs MLP over multiple seeds."
+        description="Compare v4 direct history vs future prior over multiple seeds."
     )
     parser.add_argument(
         "--cfg",
@@ -75,23 +73,23 @@ def parse_args() -> argparse.Namespace:
         default=list(DEFAULT_SEEDS),
         help="Random seeds to evaluate.",
     )
-    parser.add_argument("--gpu_kan", default="0", help="GPU id for KAN runs.")
-    parser.add_argument("--gpu_mlp", default="1", help="GPU id for MLP runs.")
+    parser.add_argument("--gpu_history", default="0", help="GPU id for history-prior runs.")
+    parser.add_argument("--gpu_future", default="1", help="GPU id for future-prior runs.")
     parser.add_argument(
-        "--mappers",
+        "--variants",
         nargs="+",
-        default=list(DEFAULT_MAPPERS),
-        choices=("kan", "mlp"),
-        help="Base mapper types to compare.",
+        default=list(DEFAULT_VARIANTS),
+        choices=DEFAULT_VARIANTS,
+        help="Direct prior variants to compare.",
     )
     parser.add_argument(
         "--out",
-        default=os.path.join(ROOT, "results", "pems04_v3_base_delta_plus_prior.csv"),
+        default=os.path.join(ROOT, "results", "pems04_v4_direct_prior.csv"),
         help="CSV output path.",
     )
     parser.add_argument(
         "--markdown",
-        default=os.path.join(ROOT, "results", "pems04_v3_base_delta_plus_prior.md"),
+        default=os.path.join(ROOT, "results", "pems04_v4_direct_prior.md"),
         help="Markdown summary output path.",
     )
     parser.add_argument(
@@ -102,32 +100,41 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def variant_name(mapper: str) -> str:
-    return f"{VARIANT_PREFIX}_{mapper}"
-
-
 def cfg_basename(cfg_path: str) -> str:
     return os.path.splitext(os.path.basename(cfg_path))[0]
 
 
-def temp_cfg_path(base_cfg: str, mapper: str, seed: int) -> str:
+def temp_cfg_path(base_cfg: str, variant: str, seed: int) -> str:
+    short = "history" if variant == "direct_history_prior" else "future"
     return os.path.join(
         TEMP_CFG_DIR,
-        f"{cfg_basename(base_cfg)}_{mapper}_seed{seed}.py",
+        f"{cfg_basename(base_cfg)}_{short}_seed{seed}.py",
     )
 
 
-def generate_temp_config(base_cfg: str, mapper: str, seed: int) -> str:
+def generate_temp_config(base_cfg: str, variant: str, seed: int) -> str:
     with open(base_cfg, "r", encoding="utf-8") as f:
         content = f.read()
 
-    ckpt_suffix = f"_v3_base_delta_plus_prior_{mapper}_seed{seed}"
+    if variant == "direct_history_prior":
+        ckpt_suffix = f"_v4_direct_history_prior_seed{seed}"
+        extra_params = ""
+    else:
+        ckpt_suffix = f"_v4_direct_future_prior_seed{seed}"
+        extra_params = """
+CFG.MODEL.PARAM["use_template_lookup"] = True
+CFG.MODEL.PARAM["data_path"] = os.path.join(
+    CFG.TRAIN.DATA.DIR,
+    "data_in{}_out{}.npz".format(CFG.DATASET_INPUT_LEN, CFG.DATASET_OUTPUT_LEN),
+)
+CFG.MODEL.PARAM["slots_per_day"] = CFG.MODEL.PARAM.get("td_size", 288)
+"""
+
     override = f"""
 
-# ===== v3 base_delta_plus_prior ablation overrides (auto-generated) =====
-CFG.MODEL.PARAM["residual_mode"] = "base_delta_plus_prior"
-CFG.MODEL.PARAM["base_mapper_type"] = "{mapper}"
-if hasattr(CFG, "SEED"):
+# ===== v4 direct prior ablation overrides (auto-generated) =====
+CFG.MODEL.PARAM["residual_mode"] = "{variant}"
+{extra_params}if hasattr(CFG, "SEED"):
     CFG.SEED = {seed}
 if hasattr(CFG, "ENV"):
     CFG.ENV.SEED = {seed}
@@ -135,7 +142,7 @@ if hasattr(CFG, "TRAIN") and hasattr(CFG.TRAIN, "SEED"):
     CFG.TRAIN.SEED = {seed}
 CFG.TRAIN.CKPT_SAVE_DIR = CFG.TRAIN.CKPT_SAVE_DIR + "{ckpt_suffix}"
 """
-    out_path = temp_cfg_path(base_cfg, mapper, seed)
+    out_path = temp_cfg_path(base_cfg, variant, seed)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(content)
@@ -144,7 +151,7 @@ CFG.TRAIN.CKPT_SAVE_DIR = CFG.TRAIN.CKPT_SAVE_DIR + "{ckpt_suffix}"
 
 
 def load_ckpt_dir_from_cfg(cfg_path: str) -> str:
-    spec = importlib.util.spec_from_file_location("v3_ablation_cfg", cfg_path)
+    spec = importlib.util.spec_from_file_location("v4_ablation_cfg", cfg_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to import config: {cfg_path}")
     module = importlib.util.module_from_spec(spec)
@@ -199,34 +206,34 @@ def parse_test_metrics(log_path: str) -> Tuple[Optional[float], Optional[float],
 
 def run_single(
     base_cfg: str,
-    mapper: str,
+    variant: str,
     seed: int,
     gpu: str,
     dry_run: bool,
 ) -> RunResult:
-    cfg_path = generate_temp_config(base_cfg, mapper, seed)
+    cfg_path = generate_temp_config(base_cfg, variant, seed)
     ckpt_dir = load_ckpt_dir_from_cfg(cfg_path)
     rel_cfg = os.path.relpath(cfg_path, ROOT)
     cmd = [sys.executable, "examples/run.py", "--cfg", rel_cfg, "--gpus", str(gpu)]
     cmd_str = " ".join(cmd)
     result = RunResult(
-        variant=variant_name(mapper),
-        mapper=mapper,
+        variant=variant,
         seed=seed,
         ckpt_dir=ckpt_dir,
         cmd=cmd_str,
         cfg_path=cfg_path,
     )
 
-    print(f"[{result.variant} seed={seed} gpu={gpu}] {cmd_str}")
+    print(f"[{variant} seed={seed} gpu={gpu}] {cmd_str}")
     if dry_run:
         result.status = "dry_run"
         return result
 
     os.makedirs(RUN_LOG_DIR, exist_ok=True)
+    short = "history" if variant == "direct_history_prior" else "future"
     wrapper_log = os.path.join(
         RUN_LOG_DIR,
-        f"{cfg_basename(base_cfg)}_{mapper}_seed{seed}.log",
+        f"{cfg_basename(base_cfg)}_{short}_seed{seed}.log",
     )
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu)
@@ -267,7 +274,7 @@ def worker_loop(
     dry_run: bool,
 ) -> None:
     for seed in seeds:
-        result = run_single(base_cfg, state.mapper, seed, state.gpu, dry_run)
+        result = run_single(base_cfg, state.variant, seed, state.gpu, dry_run)
         with state.lock:
             state.results.append(result)
 
@@ -305,7 +312,6 @@ def write_csv(path: str, results: Sequence[RunResult]) -> None:
             f,
             fieldnames=[
                 "variant",
-                "mapper",
                 "seed",
                 "mae",
                 "rmse",
@@ -318,11 +324,10 @@ def write_csv(path: str, results: Sequence[RunResult]) -> None:
             ],
         )
         writer.writeheader()
-        for r in sorted(results, key=lambda x: (x.mapper, x.seed)):
+        for r in sorted(results, key=lambda x: (x.variant, x.seed)):
             writer.writerow(
                 {
                     "variant": r.variant,
-                    "mapper": r.mapper,
                     "seed": r.seed,
                     "mae": r.mae,
                     "rmse": r.rmse,
@@ -338,19 +343,19 @@ def write_csv(path: str, results: Sequence[RunResult]) -> None:
 
 def write_markdown(path: str, results: Sequence[RunResult], seeds: Sequence[int]) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    by_mapper: Dict[str, List[RunResult]] = {}
+    by_variant: Dict[str, List[RunResult]] = {}
     for r in results:
-        by_mapper.setdefault(r.mapper, []).append(r)
+        by_variant.setdefault(r.variant, []).append(r)
 
-    lines = ["# V3 Base Delta Plus Prior Seed Ablation", ""]
+    lines = ["# V4 Direct Prior Seed Ablation", ""]
 
     lines.append("## Per-run results")
     lines.append("")
-    lines.append("| variant | mapper | seed | MAE | RMSE | MAPE | status |")
-    lines.append("| --- | --- | ---: | ---: | ---: | ---: | --- |")
-    for r in sorted(results, key=lambda x: (x.mapper, x.seed)):
+    lines.append("| variant | seed | MAE | RMSE | MAPE | status |")
+    lines.append("| --- | ---: | ---: | ---: | ---: | --- |")
+    for r in sorted(results, key=lambda x: (x.variant, x.seed)):
         lines.append(
-            f"| {r.variant} | {r.mapper} | {r.seed} | {fmt(r.mae)} | {fmt(r.rmse)} | "
+            f"| {r.variant} | {r.seed} | {fmt(r.mae)} | {fmt(r.rmse)} | "
             f"{fmt(r.mape)} | {r.status} |"
         )
     lines.append("")
@@ -358,30 +363,38 @@ def write_markdown(path: str, results: Sequence[RunResult], seeds: Sequence[int]
     lines.append("## Summary")
     lines.append("")
     lines.append(
-        "| mapper | n | MAE mean | MAE std | MAE 95% CI | "
+        "| variant | n | MAE mean | MAE std | MAE 95% CI | "
         "RMSE mean | RMSE std | RMSE 95% CI | MAPE mean | MAPE std | MAPE 95% CI |"
     )
     lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
-    for mapper in sorted(by_mapper):
-        ok = [r for r in by_mapper[mapper] if r.status == "ok"]
+    for variant in sorted(by_variant):
+        ok = [r for r in by_variant[variant] if r.status == "ok"]
         mae_s = summarize_group(ok, "mae")
         rmse_s = summarize_group(ok, "rmse")
         mape_s = summarize_group(ok, "mape")
         lines.append(
-            f"| {mapper} | {mae_s['n']} | {fmt(mae_s['mean'])} | {fmt(mae_s['std'])} | "
+            f"| {variant} | {mae_s['n']} | {fmt(mae_s['mean'])} | {fmt(mae_s['std'])} | "
             f"{fmt(mae_s['ci95'])} | {fmt(rmse_s['mean'])} | {fmt(rmse_s['std'])} | "
             f"{fmt(rmse_s['ci95'])} | {fmt(mape_s['mean'])} | {fmt(mape_s['std'])} | "
             f"{fmt(mape_s['ci95'])} |"
         )
     lines.append("")
 
-    kan_by_seed = {r.seed: r for r in results if r.mapper == "kan" and r.status == "ok"}
-    mlp_by_seed = {r.seed: r for r in results if r.mapper == "mlp" and r.status == "ok"}
-    shared_seeds = sorted(set(kan_by_seed) & set(mlp_by_seed) & set(seeds))
+    hist_by_seed = {
+        r.seed: r
+        for r in results
+        if r.variant == "direct_history_prior" and r.status == "ok"
+    }
+    fut_by_seed = {
+        r.seed: r
+        for r in results
+        if r.variant == "direct_future_prior" and r.status == "ok"
+    }
+    shared_seeds = sorted(set(hist_by_seed) & set(fut_by_seed) & set(seeds))
 
-    lines.append("## Paired difference: MLP - KAN")
+    lines.append("## Paired difference: Future - History")
     lines.append("")
-    lines.append("Positive diff means MLP is worse than KAN.")
+    lines.append("Positive diff means future prior is worse than history prior.")
     lines.append("")
     if not shared_seeds:
         lines.append("_No paired successful runs available._")
@@ -390,7 +403,7 @@ def write_markdown(path: str, results: Sequence[RunResult], seeds: Sequence[int]
         lines.append("| --- | ---: | ---: | ---: |")
         for metric in ("mae", "rmse", "mape"):
             diffs = [
-                getattr(mlp_by_seed[s], metric) - getattr(kan_by_seed[s], metric)
+                getattr(fut_by_seed[s], metric) - getattr(hist_by_seed[s], metric)
                 for s in shared_seeds
             ]
             mean = statistics.mean(diffs)
@@ -411,16 +424,19 @@ def main() -> None:
     if not os.path.exists(base_cfg):
         raise FileNotFoundError(f"Config not found: {base_cfg}")
 
-    gpu_map = {"kan": args.gpu_kan, "mlp": args.gpu_mlp}
+    gpu_map = {
+        "direct_history_prior": args.gpu_history,
+        "direct_future_prior": args.gpu_future,
+    }
     workers: List[Tuple[threading.Thread, WorkerState]] = []
 
-    for mapper in args.mappers:
-        gpu = gpu_map.get(mapper, args.gpu_kan)
-        state = WorkerState(mapper=mapper, gpu=str(gpu))
+    for variant in args.variants:
+        gpu = gpu_map.get(variant, args.gpu_history)
+        state = WorkerState(variant=variant, gpu=str(gpu))
         thread = threading.Thread(
             target=worker_loop,
             args=(state, base_cfg, args.seeds, args.dry_run),
-            name=f"worker-{mapper}",
+            name=f"worker-{variant}",
             daemon=True,
         )
         workers.append((thread, state))

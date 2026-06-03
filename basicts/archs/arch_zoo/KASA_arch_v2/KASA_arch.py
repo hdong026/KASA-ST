@@ -106,26 +106,28 @@ class KASA_v2(nn.Module):
         # Main Residual (Standard LSTNN)
         self.residual = nn.Conv2d(in_channels=self.input_len, out_channels=self.output_len, kernel_size=(1, 1), bias=True)
         
-        # 🔥 关键修改 2: Prior / base residual mappers
+        # 🔥 关键修改 2: Prior / base / direct residual modes
         if self.input_dim > 3:
             self.residual_mode = model_args.get("residual_mode", "prior_mapper")
+            self.slots_per_day = int(model_args.get("slots_per_day", self.td_size))
+            self._direct_future_fallback_warned = False
 
-            prior_mapper_type = model_args.get("prior_mapper_type", "kan")
-            if prior_mapper_type == "kan":
-                self.prior_mapper = SimpleKANLinear(1, 1)
-            elif prior_mapper_type == "mlp":
-                self.prior_mapper = nn.Sequential(
-                    nn.Linear(1, 16),
-                    nn.SiLU(),
-                    nn.Linear(16, 1),
-                )
-            elif prior_mapper_type == "linear":
-                self.prior_mapper = nn.Linear(1, 1)
-            else:
-                raise ValueError(f"Unsupported prior_mapper_type: {prior_mapper_type}")
-            self.prior_mapper_type = prior_mapper_type
-
-            if self.residual_mode == "base_mapper_plus_prior":
+            if self.residual_mode == "prior_mapper":
+                prior_mapper_type = model_args.get("prior_mapper_type", "kan")
+                if prior_mapper_type == "kan":
+                    self.prior_mapper = SimpleKANLinear(1, 1)
+                elif prior_mapper_type == "mlp":
+                    self.prior_mapper = nn.Sequential(
+                        nn.Linear(1, 16),
+                        nn.SiLU(),
+                        nn.Linear(16, 1),
+                    )
+                elif prior_mapper_type == "linear":
+                    self.prior_mapper = nn.Linear(1, 1)
+                else:
+                    raise ValueError(f"Unsupported prior_mapper_type: {prior_mapper_type}")
+                self.prior_mapper_type = prior_mapper_type
+            elif self.residual_mode == "base_delta_plus_prior":
                 base_mapper_type = model_args.get("base_mapper_type", "mlp")
                 if base_mapper_type == "mlp":
                     self.base_mapper = nn.Sequential(
@@ -140,6 +142,32 @@ class KASA_v2(nn.Module):
                 else:
                     raise ValueError(f"Unsupported base_mapper_type: {base_mapper_type}")
                 self.base_mapper_type = base_mapper_type
+                self._zero_init_base_mapper(self.base_mapper, base_mapper_type)
+            elif self.residual_mode in ("direct_history_prior", "direct_future_prior"):
+                pass
+            else:
+                raise ValueError(f"Unknown residual_mode: {self.residual_mode}")
+
+            if (
+                self.residual_mode == "direct_future_prior"
+                or model_args.get("use_template_lookup", False)
+            ):
+                template = self._load_weekly_template(model_args.get("data_path"))
+                if template is not None:
+                    self.register_buffer("weekly_spectral_template", template, persistent=False)
+
+    def _zero_init_base_mapper(self, base_mapper, base_mapper_type):
+        """Initialize base_mapper so base_delta starts near zero."""
+        if base_mapper_type == "mlp":
+            nn.init.zeros_(base_mapper[-1].weight)
+            nn.init.zeros_(base_mapper[-1].bias)
+        elif base_mapper_type == "linear":
+            nn.init.zeros_(base_mapper.weight)
+            nn.init.zeros_(base_mapper.bias)
+        elif base_mapper_type == "kan":
+            nn.init.zeros_(base_mapper.base_linear.weight)
+            nn.init.zeros_(base_mapper.base_linear.bias)
+            nn.init.zeros_(base_mapper.spline_weight)
 
     def _load_weekly_template(self, data_path):
         if not data_path or not os.path.exists(data_path) or not str(data_path).endswith(".npz"):
@@ -248,16 +276,33 @@ class KASA_v2(nn.Module):
         history_flow = history_data[..., 0]  # [B, L, N]
         output = self.spatial_module.refine_prediction(output, history_flow)
         
-        # Residual calibration: Y_hat = phi(Y_base) + P_hist or Y_base + phi(P_hist)
+        # Residual calibration
         if self.input_dim > 3:
-            prior_data = history_data[..., 3:4]
-
             if self.residual_mode == "prior_mapper":
+                prior_data = history_data[..., 3:4]
                 prior_residual = self.prior_mapper(prior_data)
                 output = output + prior_residual
-            elif self.residual_mode == "base_mapper_plus_prior":
-                base_calibrated = self.base_mapper(output)
-                output = base_calibrated + prior_data
+            elif self.residual_mode == "base_delta_plus_prior":
+                prior_data = history_data[..., 3:4]
+                base_delta = self.base_mapper(output)
+                output = output + base_delta + prior_data
+            elif self.residual_mode == "direct_history_prior":
+                prior_data = history_data[..., 3:4]
+                output = output + prior_data
+            elif self.residual_mode == "direct_future_prior":
+                weekly_template = getattr(self, "weekly_spectral_template", None)
+                if future_data is not None and weekly_template is not None:
+                    prior_data = self._lookup_weekly_template(future_data)
+                    output = output + prior_data
+                else:
+                    if not self._direct_future_fallback_warned:
+                        print(
+                            "WARNING: direct_future_prior fallback to history prior "
+                            "(future_data or weekly_spectral_template unavailable)."
+                        )
+                        self._direct_future_fallback_warned = True
+                    prior_data = history_data[..., 3:4]
+                    output = output + prior_data
             else:
                 raise ValueError(f"Unknown residual_mode: {self.residual_mode}")
 
