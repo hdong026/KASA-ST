@@ -51,6 +51,9 @@ class KASA_v2(nn.Module):
         self.if_spatial = model_args["if_spatial"]
         self.num_layer = model_args["num_layer"]
         self.spatial_scheme = str(model_args.get("spatial_scheme", "legacy")).upper()
+        self.use_pre_temporal_spatial_enhancement = model_args.get(
+            "use_pre_temporal_spatial_enhancement", True
+        )
 
         self.td_codebook = None
         self.dw_codebook = None
@@ -106,73 +109,30 @@ class KASA_v2(nn.Module):
         # Main Residual (Standard LSTNN)
         self.residual = nn.Conv2d(in_channels=self.input_len, out_channels=self.output_len, kernel_size=(1, 1), bias=True)
         
-        # 🔥 关键修改 2: Prior / base / direct residual modes
+        # Prior mapper on history channel 3
         if self.input_dim > 3:
-            self.residual_mode = model_args.get("residual_mode", "prior_mapper")
-            self.slots_per_day = int(model_args.get("slots_per_day", 288))
-            self.debug_template_lookup = model_args.get("debug_template_lookup", False)
-            self._template_debug_printed = False
-
-            template = self._load_weekly_template(model_args.get("data_path"))
-            if template is not None:
-                self.register_buffer("weekly_spectral_template", template, persistent=False)
+            prior_mapper_type = model_args.get("prior_mapper_type", "mlp")
+            if prior_mapper_type == "kan":
+                self.prior_mapper = SimpleKANLinear(1, 1)
+            elif prior_mapper_type == "mlp":
+                self.prior_mapper = nn.Sequential(
+                    nn.Linear(1, 16),
+                    nn.SiLU(),
+                    nn.Linear(16, 1),
+                )
+            elif prior_mapper_type == "linear":
+                self.prior_mapper = nn.Linear(1, 1)
             else:
-                self.weekly_spectral_template = None
+                raise ValueError(f"Unsupported prior_mapper_type: {prior_mapper_type}")
+            self.prior_mapper_type = prior_mapper_type
 
-            if self.residual_mode == "prior_mapper":
-                prior_mapper_type = model_args.get("prior_mapper_type", "kan")
-                if prior_mapper_type == "kan":
-                    self.prior_mapper = SimpleKANLinear(1, 1)
-                elif prior_mapper_type == "mlp":
-                    self.prior_mapper = nn.Sequential(
-                        nn.Linear(1, 16),
-                        nn.SiLU(),
-                        nn.Linear(16, 1),
-                    )
-                elif prior_mapper_type == "linear":
-                    self.prior_mapper = nn.Linear(1, 1)
-                else:
-                    raise ValueError(f"Unsupported prior_mapper_type: {prior_mapper_type}")
-                self.prior_mapper_type = prior_mapper_type
-            elif self.residual_mode == "base_mapper_plus_prior":
-                base_mapper_type = model_args.get("base_mapper_type", "mlp")
-                if base_mapper_type == "mlp":
-                    self.base_mapper = nn.Sequential(
-                        nn.Linear(1, 16),
-                        nn.SiLU(),
-                        nn.Linear(16, 1),
-                    )
-                elif base_mapper_type == "kan":
-                    self.base_mapper = SimpleKANLinear(1, 1)
-                elif base_mapper_type == "linear":
-                    self.base_mapper = nn.Linear(1, 1)
-                else:
-                    raise ValueError(f"Unsupported base_mapper_type: {base_mapper_type}")
-                self.base_mapper_type = base_mapper_type
-            elif self.residual_mode in ("direct_history_prior", "direct_future_prior"):
-                if (
-                    self.residual_mode == "direct_future_prior"
-                    and getattr(self, "weekly_spectral_template", None) is None
-                ):
-                    raise ValueError(
-                        "direct_future_prior requires weekly_spectral_template; "
-                        "provide data_path to an npz containing weekly_spectral_template."
-                    )
-            else:
-                raise ValueError(f"Unknown residual_mode: {self.residual_mode}")
-
-    def _zero_init_base_mapper(self, base_mapper, base_mapper_type):
-        """Initialize base_mapper so base_delta starts near zero."""
-        if base_mapper_type == "mlp":
-            nn.init.zeros_(base_mapper[-1].weight)
-            nn.init.zeros_(base_mapper[-1].bias)
-        elif base_mapper_type == "linear":
-            nn.init.zeros_(base_mapper.weight)
-            nn.init.zeros_(base_mapper.bias)
-        elif base_mapper_type == "kan":
-            nn.init.zeros_(base_mapper.base_linear.weight)
-            nn.init.zeros_(base_mapper.base_linear.bias)
-            nn.init.zeros_(base_mapper.spline_weight)
+        # Optional weekly template for debug scripts (not used in forward).
+        self.slots_per_day = int(model_args.get("slots_per_day", 288))
+        template = self._load_weekly_template(model_args.get("data_path"))
+        if template is not None:
+            self.register_buffer("weekly_spectral_template", template, persistent=False)
+        else:
+            self.weekly_spectral_template = None
 
     def _load_weekly_template(self, data_path):
         if not data_path or not os.path.exists(data_path) or not str(data_path).endswith(".npz"):
@@ -243,8 +203,12 @@ class KASA_v2(nn.Module):
     def forward(self, history_data: torch.Tensor, future_data: torch.Tensor, batch_seen: int, epoch: int, train: bool, **kwargs) -> torch.Tensor:
         # history_data: [B, L, N, 4]
         
-        # A/C scheme: GCN-enhanced spatial codebook before temporal encoders.
-        enhanced_spa_emb = self.spatial_module.get_enhanced_spatial_embedding(self.spa_codebook)
+        if self.use_pre_temporal_spatial_enhancement:
+            spatial_codebook_for_encoder = self.spatial_module.get_enhanced_spatial_embedding(
+                self.spa_codebook
+            )
+        else:
+            spatial_codebook_for_encoder = self.spa_codebook
         
         # 1. 准备主干输入 (只取前3通道)
         # [B, L, N, 3] -> (Flow, TOD, DOW)
@@ -264,8 +228,12 @@ class KASA_v2(nn.Module):
 
         patch_input = main_input_aug.unfold(dimension=1, size=self.patch_len, step=self.patch_len).permute(0, 1, 4, 2, 3) 
 
-        patch_predict = self.patch_encoder(patch_input, spatial_codebook=enhanced_spa_emb)
-        downsamp_predict = self.downsamp_encoder(downsamp_input, spatial_codebook=enhanced_spa_emb)
+        patch_predict = self.patch_encoder(
+            patch_input, spatial_codebook=spatial_codebook_for_encoder
+        )
+        downsamp_predict = self.downsamp_encoder(
+            downsamp_input, spatial_codebook=spatial_codebook_for_encoder
+        )
 
         # 4. Main Residual (Standard LSTNN)
         # Only use Flow (Channel 0)
@@ -283,36 +251,9 @@ class KASA_v2(nn.Module):
         history_flow = history_data[..., 0]  # [B, L, N]
         output = self.spatial_module.refine_prediction(output, history_flow)
         
-        # Residual calibration
         if self.input_dim > 3:
-            if self.residual_mode == "prior_mapper":
-                prior_data = history_data[..., 3:4]
-                prior_residual = self.prior_mapper(prior_data)
-                output = output + prior_residual
-
-            elif self.residual_mode == "base_mapper_plus_prior":
-                prior_data = history_data[..., 3:4]
-                base_calibrated = self.base_mapper(output)
-                output = base_calibrated + prior_data
-
-            elif self.residual_mode == "direct_history_prior":
-                prior_data = history_data[..., 3:4]
-                output = output + prior_data
-
-            elif self.residual_mode == "direct_future_prior":
-                if future_data is None:
-                    raise ValueError("future_data is required for direct_future_prior")
-                if getattr(self, "weekly_spectral_template", None) is None:
-                    raise ValueError(
-                        "weekly_spectral_template is required for direct_future_prior"
-                    )
-                prior_data = self._lookup_weekly_template(future_data)
-                if self.debug_template_lookup and not self._template_debug_printed:
-                    self._print_template_debug(future_data, prior_data, history_data)
-                    self._template_debug_printed = True
-                output = output + prior_data
-
-            else:
-                raise ValueError(f"Unknown residual_mode: {self.residual_mode}")
+            prior_data = history_data[..., 3:4]
+            prior_residual = self.prior_mapper(prior_data)
+            output = output + prior_residual
 
         return output
