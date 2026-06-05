@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import shutil
@@ -19,10 +20,57 @@ if root_path not in sys.path:
 from basicts.data.transform import standard_transform
 
 
+def write_protocol_audit(
+    output_dir: str,
+    *,
+    history_seq_len: int,
+    future_seq_len: int,
+    train_ratio: float,
+    valid_ratio: float,
+    train_n: int,
+    valid_n: int,
+    test_n: int,
+    num_channels: int,
+    steps_per_day: int,
+    steps_per_week: int,
+) -> dict:
+    test_ratio = 1.0 - train_ratio - valid_ratio
+    meta = {
+        "dataset": "PEMS04",
+        "protocol": "official_6_2_2",
+        "train_ratio": train_ratio,
+        "valid_ratio": valid_ratio,
+        "test_ratio": test_ratio,
+        "history_seq_len": history_seq_len,
+        "future_seq_len": future_seq_len,
+        "num_channels": num_channels,
+        "channel_0": "normalized_flow",
+        "channel_1": "tod",
+        "channel_2": "dow",
+        "channel_3": "train_only_fft_filtered_weekly_prior",
+        "prior_uses_train_only": True,
+        "steps_per_day": steps_per_day,
+        "steps_per_week": steps_per_week,
+        "train_samples": train_n,
+        "valid_samples": valid_n,
+        "test_samples": test_n,
+    }
+    audit_path = os.path.join(output_dir, "protocol_audit.json")
+    with open(audit_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+    print("Saved protocol audit: {0}".format(audit_path))
+    print(json.dumps(meta, indent=2))
+    return meta
+
+
 def generate_data(args: argparse.Namespace):
     """
-    Preprocess and generate train/valid/test datasets.
-    Modified for HoloST to include Channel 4: Prior Knowledge.
+    Preprocess and generate train/valid/test datasets for PeMS04 12→12.
+
+    Protocol:
+        - Split: official 6:2:2 (train_ratio=0.6, valid_ratio=0.2, test remainder 0.2)
+        - Channels: flow, ToD, DoW, train-only FFT-filtered weekly prior (ch3)
+        - Prior/scaler fit on training split only
     """
     target_channel = args.target_channel
     future_seq_len = args.future_seq_len
@@ -148,7 +196,21 @@ def generate_data(args: argparse.Namespace):
         slots_per_week=steps_per_week,
     )
     print("Saved processed npz: {0}".format(npz_path))
-        
+
+    write_protocol_audit(
+        output_dir,
+        history_seq_len=history_seq_len,
+        future_seq_len=future_seq_len,
+        train_ratio=train_ratio,
+        valid_ratio=valid_ratio,
+        train_n=train_num_short,
+        valid_n=valid_num_short,
+        test_n=test_num_short,
+        num_channels=processed_data.shape[-1],
+        steps_per_day=steps_per_day,
+        steps_per_week=steps_per_week,
+    )
+
     # Copy Adj
     if os.path.exists(args.graph_file_path):
         shutil.copyfile(args.graph_file_path, output_dir + "/adj_mx.pkl")
@@ -161,11 +223,11 @@ def generate_data(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    # Settings (Keep same as original)
+    # PeMS04 12→12, official 6:2:2 split, 4 channels (flow/ToD/DoW/train-only prior)
     HISTORY_SEQ_LEN = 12
     FUTURE_SEQ_LEN = 12
-    TRAIN_RATIO = 0.7
-    VALID_RATIO = 0.1
+    TRAIN_RATIO = 0.6
+    VALID_RATIO = 0.2
     TARGET_CHANNEL = [0]
     STEPS_PER_DAY = 288
     DATASET_NAME = "PEMS04"

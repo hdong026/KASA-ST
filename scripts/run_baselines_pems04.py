@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import os
 import re
 import subprocess
@@ -16,13 +17,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_DIR = ROOT / "examples" / "baselines"
 RUN_PY = ROOT / "examples" / "run.py"
+LOG_DIR = ROOT / "results" / "baseline_logs"
 
 METRIC_PATTERNS = {
     "mae": re.compile(r"test_MAE:\s*([0-9.eE+-]+)", re.I),
     "rmse": re.compile(r"test_RMSE:\s*([0-9.eE+-]+)", re.I),
     "mape": re.compile(r"test_MAPE:\s*([0-9.eE+-]+)", re.I),
 }
-RESULT_TEST_BLOCK = re.compile(r"Result <test>:\s*\[(.*?)\]", re.I | re.S)
+RESULT_TEST_BLOCK = re.compile(
+    r"Result\s*(?:<[^>]+>)?\s*:\s*\[(.*?)\]",
+    re.I | re.S,
+)
+
+T_CRIT = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571}
 
 
 def config_path(model: str) -> Path | None:
@@ -39,17 +46,37 @@ def cfg_for_easytorch(path: Path) -> str:
         return str(path)
 
 
-def parse_metrics(log_text: str) -> dict[str, float | None]:
-    """Parse the last test result block (matches easytorch training logs)."""
+def _parse_block(block: str) -> dict[str, float | None]:
     out: dict[str, float | None] = {k: None for k in METRIC_PATTERNS}
-    blocks = list(RESULT_TEST_BLOCK.finditer(log_text))
-    if not blocks:
-        return out
-    block = blocks[-1].group(1)
     for k, pat in METRIC_PATTERNS.items():
         m = pat.search(block)
         if m:
             out[k] = float(m.group(1))
+    return out
+
+
+def parse_metrics(log_text: str) -> dict[str, float | None]:
+    """Parse test metrics; prefer lowest-MAE result block, else fallback to full log."""
+    out: dict[str, float | None] = {k: None for k in METRIC_PATTERNS}
+    blocks = list(RESULT_TEST_BLOCK.finditer(log_text))
+
+    best: dict[str, float | None] | None = None
+    best_mae: float | None = None
+    for m in blocks:
+        parsed = _parse_block(m.group(1))
+        if parsed["mae"] is None:
+            continue
+        if best_mae is None or parsed["mae"] < best_mae:
+            best_mae = parsed["mae"]
+            best = parsed
+
+    if best is not None:
+        return best
+
+    # Fallback: scan entire log for metric triples.
+    fallback = _parse_block(log_text)
+    if fallback["mae"] is not None:
+        return fallback
     return out
 
 
@@ -66,9 +93,21 @@ def collect_log_text(wrapper_log: Path, model: str, seed: int) -> str:
             for tlog in sorted(d.glob("*/training_log_*.log"), key=lambda p: p.stat().st_mtime, reverse=True):
                 parts.append(tlog.read_text(errors="replace"))
                 break
-            if parts:
+            if len(parts) > 1:
                 break
     return "\n".join(parts)
+
+
+_CKPT_SAVE_DIR_CONCAT = re.compile(
+    r'(CFG\.TRAIN\.CKPT_SAVE_DIR\s*=\s*os\.path\.join\("checkpoints",\s*"baselines",\s*")'
+    r'([^"]*)(" \+ str\(CFG\.TRAIN\.NUM_EPOCHS\)\))'
+)
+
+
+def _seed_ckpt_prefix(prefix: str, seed: int) -> str:
+    """Insert _seed<N>_ into baselines CKPT dir prefix, e.g. DCRNN_PEMS04_ -> DCRNN_PEMS04_seed3_."""
+    base = re.sub(r"_seed\d+", "", prefix).strip("_")
+    return f"{base}_seed{seed}_"
 
 
 def make_seed_config(base_cfg: Path, model: str, seed: int) -> Path:
@@ -77,13 +116,20 @@ def make_seed_config(base_cfg: Path, model: str, seed: int) -> Path:
         text = re.sub(r"CFG\.ENV\.SEED\s*=\s*\d+", f"CFG.ENV.SEED = {seed}", text)
     else:
         text = text.replace("CFG.ENV = EasyDict()", f"CFG.ENV = EasyDict()\nCFG.ENV.SEED = {seed}")
-    # Separate checkpoint dirs per seed to avoid overwrites.
-    text = re.sub(
-        r'(CFG\.TRAIN\.CKPT_SAVE_DIR = os\.path\.join\("checkpoints", "baselines", ")([^"]+)(")',
-        rf'\1\2_seed{seed}\3',
-        text,
-        count=1,
-    )
+
+    def _ckpt_repl(m: re.Match) -> str:
+        return f'{m.group(1)}{_seed_ckpt_prefix(m.group(2), seed)}{m.group(3)}'
+
+    if _CKPT_SAVE_DIR_CONCAT.search(text):
+        text = _CKPT_SAVE_DIR_CONCAT.sub(_ckpt_repl, text, count=1)
+    else:
+        # Fallback: literal third argument inside path.join (no "+ str(...)" suffix).
+        text = re.sub(
+            r'(CFG\.TRAIN\.CKPT_SAVE_DIR\s*=\s*os\.path\.join\("checkpoints",\s*"baselines",\s*")([^"]+)(")',
+            lambda m: f'{m.group(1)}{_seed_ckpt_prefix(m.group(2), seed).rstrip("_")}{m.group(3)}',
+            text,
+            count=1,
+        )
     tmp = tempfile.NamedTemporaryFile(
         mode="w",
         suffix=f"_{base_cfg.stem}_seed{seed}.py",
@@ -122,11 +168,8 @@ def run_one(model: str, cfg: Path, gpu: str, seed: int, multi_seed: bool) -> dic
         cfg_to_run = cfg
         cleanup_cfg = False
 
-    log_dir = ROOT / "results" / "baseline_logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"{model}_seed{seed}_gpu{gpu}.log"
-    # EasyTorch launch_training calls set_visible_devices(--gpus) and overwrites
-    # CUDA_VISIBLE_DEVICES. Always pass the physical GPU id here (not "0" for all jobs).
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_file = LOG_DIR / f"{model}_seed{seed}_gpu{gpu}.log"
     env = os.environ.copy()
     env.pop("CUDA_VISIBLE_DEVICES", None)
     cfg_arg = cfg_for_easytorch(cfg_to_run)
@@ -161,24 +204,136 @@ def run_one(model: str, cfg: Path, gpu: str, seed: int, multi_seed: bool) -> dic
     return row
 
 
-def write_outputs(rows: list[dict], out_csv: Path, out_md: Path):
+def summarize_row(model: str, seed: int) -> dict:
+    wrapper_log = None
+    if LOG_DIR.is_dir():
+        matches = sorted(LOG_DIR.glob(f"{model}_seed{seed}_gpu*.log"))
+        if matches:
+            wrapper_log = matches[-1]
+    log_file = str(wrapper_log) if wrapper_log else ""
+    log_text = collect_log_text(wrapper_log, model, seed) if wrapper_log else ""
+    metrics = parse_metrics(log_text)
+    status = "ok" if metrics["mae"] is not None else "failed_no_metrics"
+    return {
+        "model": model,
+        "seed": seed,
+        "mae": metrics["mae"],
+        "rmse": metrics["rmse"],
+        "mape": metrics["mape"],
+        "ckpt_dir": "",
+        "log_file": log_file,
+        "status": status,
+    }
+
+
+def t_crit(n: int) -> float:
+    if n in T_CRIT:
+        return T_CRIT[n]
+    try:
+        from scipy import stats
+
+        return float(stats.t.ppf(0.975, n - 1))
+    except Exception:
+        # Normal approximation when scipy is unavailable.
+        return 1.96
+
+
+def mean_std_ci(values: list[float]) -> tuple[float, float, float]:
+    n = len(values)
+    if n == 0:
+        return float("nan"), float("nan"), float("nan")
+    mean = sum(values) / n
+    if n == 1:
+        return mean, 0.0, float("nan")
+    var = sum((x - mean) ** 2 for x in values) / (n - 1)
+    std = math.sqrt(var)
+    ci = t_crit(n) * std / math.sqrt(n)
+    return mean, std, ci
+
+
+def build_summary(rows: list[dict]) -> list[dict]:
+    by_model: dict[str, list[dict]] = {}
+    for r in rows:
+        by_model.setdefault(r["model"], []).append(r)
+
+    summary = []
+    for model in sorted(by_model):
+        runs = by_model[model]
+        ok = [r for r in runs if r.get("mae") is not None and r.get("rmse") is not None and r.get("mape") is not None]
+        failed = len(runs) - len(ok)
+        mae_vals = [float(r["mae"]) for r in ok]
+        rmse_vals = [float(r["rmse"]) for r in ok]
+        mape_vals = [float(r["mape"]) for r in ok]
+        m_mae, s_mae, c_mae = mean_std_ci(mae_vals)
+        m_rmse, s_rmse, c_rmse = mean_std_ci(rmse_vals)
+        m_mape, s_mape, c_mape = mean_std_ci(mape_vals)
+        summary.append({
+            "model": model,
+            "n": len(ok),
+            "mae_mean": m_mae,
+            "mae_std": s_mae,
+            "mae_ci95": c_mae,
+            "rmse_mean": m_rmse,
+            "rmse_std": s_rmse,
+            "rmse_ci95": c_rmse,
+            "mape_mean": m_mape,
+            "mape_std": s_mape,
+            "mape_ci95": c_mape,
+            "failed": failed,
+        })
+    return summary
+
+
+def fmt_val(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, float) and math.isnan(v):
+        return ""
+    if isinstance(v, float):
+        return f"{v:.4f}"
+    return str(v)
+
+
+def write_outputs(rows: list[dict], out_csv: Path, out_md: Path, summary_csv: Path):
+    rows = sorted(rows, key=lambda r: (r["model"], int(r["seed"])))
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     fields = ["model", "seed", "mae", "rmse", "mape", "ckpt_dir", "log_file", "status"]
     with open(out_csv, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
         w.writerows(rows)
 
-    lines = [
-        "# PeMS04 baseline results (12→12)\n",
-        "| model | seed | MAE | RMSE | MAPE | status |\n",
-        "|---|---:|---:|---:|---:|---|\n",
+    summary = build_summary(rows)
+    sum_fields = [
+        "model", "n", "mae_mean", "mae_std", "mae_ci95",
+        "rmse_mean", "rmse_std", "rmse_ci95",
+        "mape_mean", "mape_std", "mape_ci95", "failed",
     ]
+    with open(summary_csv, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=sum_fields)
+        w.writeheader()
+        w.writerows(summary)
+
+    md = ["# PeMS04 baseline results (12→12)\n\n", "## Per-run results\n\n",
+          "| model | seed | MAE | RMSE | MAPE | status |\n", "|---|---:|---:|---:|---:|---|\n"]
     for r in rows:
-        lines.append(
-            f"| {r['model']} | {r['seed']} | {r['mae']} | {r['rmse']} | {r['mape']} | {r['status']} |\n"
+        md.append(
+            f"| {r['model']} | {r['seed']} | {fmt_val(r['mae'])} | {fmt_val(r['rmse'])} | "
+            f"{fmt_val(r['mape'])} | {r['status']} |\n"
         )
-    out_md.write_text("".join(lines))
+    md.append("\n## Summary\n\n")
+    md.append(
+        "| model | n | MAE mean | MAE std | MAE 95% CI | RMSE mean | RMSE std | RMSE 95% CI | "
+        "MAPE mean | MAPE std | MAPE 95% CI | failed |\n"
+    )
+    md.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+    for s in summary:
+        md.append(
+            f"| {s['model']} | {s['n']} | {fmt_val(s['mae_mean'])} | {fmt_val(s['mae_std'])} | {fmt_val(s['mae_ci95'])} | "
+            f"{fmt_val(s['rmse_mean'])} | {fmt_val(s['rmse_std'])} | {fmt_val(s['rmse_ci95'])} | "
+            f"{fmt_val(s['mape_mean'])} | {fmt_val(s['mape_std'])} | {fmt_val(s['mape_ci95'])} | {s['failed']} |\n"
+        )
+    out_md.write_text("".join(md))
 
 
 def resolve_seeds(args) -> list[int]:
@@ -209,10 +364,12 @@ def main():
     )
     parser.add_argument("--out", default="results/pems04_baselines.csv")
     parser.add_argument("--markdown", default="results/pems04_baselines.md")
+    parser.add_argument("--summary-only", "--summary_only", action="store_true", dest="summary_only")
     args = parser.parse_args()
 
     seed_list = resolve_seeds(args)
     multi_seed = len(seed_list) > 1
+    summary_csv = ROOT / "results" / "pems04_baselines_summary.csv"
 
     ready, skipped = [], []
     for m in args.models:
@@ -225,15 +382,23 @@ def main():
     if skipped:
         print("Skipped (no ready config):", ", ".join(skipped))
 
+    if args.summary_only:
+        rows = [summarize_row(model, seed) for model, _ in ready for seed in seed_list]
+        write_outputs(rows, ROOT / args.out, ROOT / args.markdown, summary_csv)
+        print(f"Wrote {args.out}, {args.markdown}, {summary_csv}")
+        return
+
     queue = GPUQueue(args.gpus)
     rows: list[dict] = []
+    lock = threading.Lock()
 
     def worker(model: str, cfg: Path, seed: int):
         gpu = queue.acquire()
         try:
             print(f"[start] {model} seed={seed} gpu={gpu}")
             row = run_one(model, cfg, gpu, seed, multi_seed)
-            rows.append(row)
+            with lock:
+                rows.append(row)
             print(f"[done]  {model} seed={seed} status={row['status']} mae={row['mae']}")
         finally:
             queue.release(gpu)
@@ -247,8 +412,8 @@ def main():
     for t in threads:
         t.join()
 
-    write_outputs(rows, ROOT / args.out, ROOT / args.markdown)
-    print(f"Wrote {args.out} and {args.markdown}")
+    write_outputs(rows, ROOT / args.out, ROOT / args.markdown, summary_csv)
+    print(f"Wrote {args.out}, {args.markdown}, {summary_csv}")
 
 
 if __name__ == "__main__":

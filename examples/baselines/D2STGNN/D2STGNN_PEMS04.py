@@ -16,6 +16,7 @@ from basicts.utils import load_adj
 CFG = EasyDict()
 
 # Source: GestaltCogTeam/BasicTS @ 7a7f970 (examples/*/*_PEMS04.py), 12->12 PeMS04
+# Data: datasets/PEMS04 official 6:2:2 split; FORWARD [0,1,2] (no ch3 prior)
 
 # ================= general ================= #
 CFG.DESCRIPTION = "D2STGNN model configuration"

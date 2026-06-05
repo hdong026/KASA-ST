@@ -4,6 +4,8 @@ import sys
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+import torch
+import torch.nn.functional as F
 from easydict import EasyDict
 from basicts.archs import GTS
 from basicts.runners import GTSRunner
@@ -14,6 +16,20 @@ _GTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _GTS_DIR not in sys.path:
     sys.path.insert(0, _GTS_DIR)
 from loss import gts_loss
+
+
+def _infer_gts_dim_fc(feats, num_nodes: int) -> int:
+    """Derive dim_fc from train node_feats via GTS conv stack (official PEMS04 uses 162976)."""
+    conv1 = torch.nn.Conv1d(1, 8, 10, stride=1)
+    conv2 = torch.nn.Conv1d(8, 16, 10, stride=1)
+    if not isinstance(feats, torch.Tensor):
+        feats = torch.tensor(feats, dtype=torch.float32)
+    x = feats.transpose(1, 0).view(num_nodes, 1, -1).float()
+    x = conv1(x)
+    x = F.relu(x)
+    x = conv2(x)
+    x = F.relu(x)
+    return int(x.view(num_nodes, -1).shape[1])
 
 
 CFG = EasyDict()
@@ -49,6 +65,7 @@ CFG.MODEL.ARCH = GTS
 node_feats_full = load_pkl("datasets/{0}/data_in{1}_out{2}.pkl".format(CFG.DATASET_NAME, CFG.DATASET_INPUT_LEN, CFG.DATASET_OUTPUT_LEN))["processed_data"][..., 0]
 train_index_list = load_pkl("datasets/{0}/index_in{1}_out{2}.pkl".format(CFG.DATASET_NAME, CFG.DATASET_INPUT_LEN, CFG.DATASET_OUTPUT_LEN))["train"]
 node_feats = node_feats_full[:train_index_list[-1][-1], ...]
+_dim_fc = _infer_gts_dim_fc(node_feats, 307)
 CFG.MODEL.PARAM = {
     "cl_decay_steps": 2000,
     "filter_type": "dual_random_walk",
@@ -62,11 +79,12 @@ CFG.MODEL.PARAM = {
     "rnn_units": 64,
     "seq_len": 12,
     "use_curriculum_learning": True,
-    "dim_fc": 162976,
+    "dim_fc": _dim_fc,
     "node_feats": node_feats,
     "temp": 0.5,
     "k": 30
 }
+CFG.MODEL.SETUP_GRAPH = True
 CFG.MODEL.FORWARD_FEATURES = [0, 1]
 CFG.MODEL.TARGET_FEATURES = [0]
 

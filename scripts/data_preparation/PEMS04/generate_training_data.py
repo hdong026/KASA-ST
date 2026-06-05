@@ -109,12 +109,12 @@ def generate_data(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    # sliding window size for generating history sequence and target sequence
-    HISTORY_SEQ_LEN = 48
+    # PeMS04 12→12, official 6:2:2 split, 3 channels (no prior; use generate_holost_data.py for KASA)
+    HISTORY_SEQ_LEN = 12
     FUTURE_SEQ_LEN = 12
 
-    TRAIN_RATIO = 0.7
-    VALID_RATIO = 0.1
+    TRAIN_RATIO = 0.6
+    VALID_RATIO = 0.2
     TARGET_CHANNEL = [0]                   # target channel(s)
     STEPS_PER_DAY = 288
 

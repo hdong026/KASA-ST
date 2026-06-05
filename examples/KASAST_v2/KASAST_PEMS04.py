@@ -17,6 +17,8 @@ from basicts.archs import KASA_v2
 
 CFG = EasyDict()
 
+# PeMS04: official 6:2:2 split, 12→12, datasets/PEMS04 (4 ch; ch3 = train-only prior)
+
 # ================= general ================= #
 CFG.DESCRIPTION = "KASA model configuration"
 CFG.RUNNER = SimpleTimeSeriesForecastingRunner
@@ -71,6 +73,8 @@ CFG.MODEL.PARAM = {
     "hybrid_alpha": 0.2,
     "use_lightweight_spatial": False,
     "use_template_lookup": False,
+    "prior_mapper_type": "mlp",
+    "use_pre_temporal_spatial_enhancement": False,
 }
 CFG.MODEL.FORWARD_FEATURES = [0, 1, 2, 3]  # traffic flow, time in day, day in week, prior
 CFG.MODEL.TARGET_FEATURES = [0]  # traffic flow

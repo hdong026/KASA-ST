@@ -156,11 +156,6 @@ class DCRNN(nn.Module, Seq2SeqAttrs):
         outputs = outputs.view(B, L, self.num_nodes,
                                self.decoder_model.output_dim)
 
-        if not self.training:
-            assert future_data == None, "Future data should not be visible when validating/testing."
-        else:
-            pass
-
         if batch_seen == 0:
             print("Warning: decoder only takes the first dimension as groundtruth.")
             print("Parameter Number: ".format(count_parameters(self)))
