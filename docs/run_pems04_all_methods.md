@@ -30,6 +30,30 @@ Configs: `examples/baselines/<Model>/<Model>_PEMS04.py`
 
 Optional (pass explicitly if fixed): `DCRNN DGCRN GWNet GTS STNorm`
 
+Paper-ready strong baselines (after smoke test): `STAEformer STWave STDN HimNet`
+
+Extended example (KASA + all ready baselines):
+
+```bash
+python scripts/run_pems04_all_methods.py \
+  --methods KASA D2STGNN STID STAEformer STWave STDN HimNet AGCRN STGCN MTGNN StemGNN \
+  --seeds 1 2 3 4 5 \
+  --gpus 0 1 \
+  --out results/pems04_all_methods_extended.csv \
+  --markdown results/pems04_all_methods_extended.md
+```
+
+New baselines one-seed sanity:
+
+```bash
+python scripts/run_pems04_all_methods.py \
+  --methods STAEformer STWave STDN HimNet \
+  --seeds 1 \
+  --gpus 0 1 \
+  --out results/pems04_new_baselines_sanity.csv \
+  --markdown results/pems04_new_baselines_sanity.md
+```
+
 Baselines are **not** modified beyond seed + deterministic checkpoint dir. They do **not** use channel 3.
 
 ## Paths

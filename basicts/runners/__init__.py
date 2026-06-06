@@ -13,10 +13,16 @@ from .runner_zoo.new_cross2d_runner import NewCrossformer2DRunner
 from .runner_zoo.InOutformer import InOutformerRunner
 from .runner_zoo.gwnet_runner import GWnetRunner
 from .runner_zoo.dgcrn_runner import DGCRNRunner
+from .runner_zoo.stdn_runner import STDNRunner
+from .runner_zoo.himnet_runner import HimNetRunner
+from .runner_zoo.staeformer_runner import STAEformerRunner
+from .runner_zoo.stwave_runner import STWaveRunner
 
 __all__ = ["BaseTimeSeriesForecastingRunner",
            "SimpleTimeSeriesForecastingRunner",
            "DCRNNRunner","MTGNNRunner", "GTSRunner",
            "HIRunner", "MegaCRNRunner", "CrossformerRunner", "STNormRunner",
            "NewCrossformerRunner", "NewCrossformer2DRunner", "PatchTSTRunner",
-           "InOutformerRunner","GWnetRunner", "DGCRNRunner"]
+           "InOutformerRunner","GWnetRunner", "DGCRNRunner",
+           "STDNRunner", "HimNetRunner",
+           "STAEformerRunner", "STWaveRunner"]

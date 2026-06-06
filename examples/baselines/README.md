@@ -30,14 +30,27 @@ Use the `basicts` conda env (or any env with `easytorch` + project deps).
 
 Checkpoints save under `checkpoints/baselines/<Model>_PEMS04_<epochs>/` (or `_seed<N>` when using the batch script).
 
+## New strong baselines (BasicTS `eb65f4b`)
+
+| Model | Status | Source | Config | Command | Notes |
+|-------|--------|--------|--------|---------|-------|
+| STAEformer | **ready** | BasicTS `eb65f4b` | `examples/baselines/STAEformer/STAEformer_PEMS04.py` | `python examples/run.py --cfg examples/baselines/STAEformer/STAEformer_PEMS04.py --gpus 0` | `[0,1,2]`; 100 epochs; v0.2 CFG adapter |
+| STWave | **ready** | BasicTS `eb65f4b` | `examples/baselines/STWave/STWave_PEMS04.py` | `python examples/run.py --cfg examples/baselines/STWave/STWave_PEMS04.py --gpus 0` | `stwave_masked_mae`; needs `PyWavelets` |
+| STDN | **ready** | BasicTS `eb65f4b` | `examples/baselines/STDN/STDN_PEMS04.py` | `python examples/run.py --cfg examples/baselines/STDN/STDN_PEMS04.py --gpus 0` | `STDNRunner`; 300 epochs; needs `torch_geometric` |
+| HimNet | **ready** | BasicTS `eb65f4b` | `examples/baselines/HimNet/HimNet_PEMS04.py` | `python examples/run.py --cfg examples/baselines/HimNet/HimNet_PEMS04.py --gpus 0` | `HimNetRunner`; `masked_huber` loss |
+
+Smoke test: `python scripts/smoke_test_new_baselines.py`
+
+Install STWave dependency (Aliyun mirror example):
+
+```bash
+pip install PyWavelets -i https://mirrors.aliyun.com/pypi/simple/
+```
+
 ## Not ready / TODO
 
 | Model | Status |
 |-------|--------|
-| STAEformer | Arch + official PeMS04 12→12 config |
-| STWave | Arch + config |
-| STDN | Arch + verified config |
-| HimNet | Arch + config |
 | DFDGCN | Arch + config |
 | STPGNN | Arch + config |
 | BigST | Arch + config |

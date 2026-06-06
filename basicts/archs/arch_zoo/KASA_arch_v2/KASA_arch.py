@@ -64,6 +64,7 @@ class KASA_v2(nn.Module):
             "keep_output_prior_residual",
             model_args.get("use_prior_residual", True),
         )
+        self.prior_source = model_args.get("prior_source", "history")
 
         self.td_codebook = None
         self.dw_codebook = None
@@ -284,7 +285,17 @@ class KASA_v2(nn.Module):
         output = self.spatial_module.refine_prediction(output, history_flow)
         
         if self.input_dim > 3 and self.keep_output_prior_residual:
-            prior_data = history_data[..., 3:4]
+            if self.prior_source == "history":
+                prior_data = history_data[..., 3:4]
+            elif self.prior_source == "future":
+                if future_data is None:
+                    raise ValueError("future_data is required when prior_source='future'")
+                if future_data.shape[-1] <= 3:
+                    raise ValueError("future_data must contain channel 3 when prior_source='future'")
+                prior_data = future_data[..., 3:4]
+            else:
+                raise ValueError(f"Unknown prior_source: {self.prior_source}")
+
             prior_residual = self.prior_mapper(prior_data)
             output = output + prior_residual
 

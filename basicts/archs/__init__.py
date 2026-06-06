@@ -16,10 +16,15 @@ from .arch_zoo.fedformer_arch import FEDformer
 from .arch_zoo.informer_arch import Informer, InformerStack
 from .arch_zoo.pyraformer_arch import Pyraformer
 from .arch_zoo.KASA_arch_v2 import KASA_v2
+from .arch_zoo.KASA_arch_v3 import KASA_v3
 from .arch_zoo.KASA_arch_v2 import KASA_v2_wo_spectral
 from .arch_zoo.KASA_arch_v2 import KASA_v2_wo_KAN
 from .arch_zoo.KASA_arch_v2 import KASA_v2_wo_GCN
 from .arch_zoo.KASA_arch_v2 import KASA_v2_w_bspline
+from .arch_zoo.staeformer_arch import STAEformer
+from .arch_zoo.stwave_arch import STWave
+from .arch_zoo.stdn_arch import STDN
+from .arch_zoo.himnet_arch import HimNet
 
 __all__ = ["STID", "GraphWaveNet", "DCRNN",
            "D2STGNN", "STGCN", "MTGNN",
@@ -28,5 +33,6 @@ __all__ = ["STID", "GraphWaveNet", "DCRNN",
            "DLinear", "NLinear", "Autoformer",
            "HINetwork", "FEDformer", "Informer",
            "InformerStack", "Pyraformer",
-           "KASA_v2", "KASA_v2_wo_spectral",
-           "KASA_v2_wo_KAN", "KASA_v2_wo_GCN", "KASA_v2_w_bspline"]
+           "KASA_v2", "KASA_v3", "KASA_v2_wo_spectral",
+           "KASA_v2_wo_KAN", "KASA_v2_wo_GCN", "KASA_v2_w_bspline",
+           "STAEformer", "STWave", "STDN", "HimNet"]
