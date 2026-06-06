@@ -54,6 +54,16 @@ class KASA_v2(nn.Module):
         self.use_pre_temporal_spatial_enhancement = model_args.get(
             "use_pre_temporal_spatial_enhancement", True
         )
+        self.use_input_prior_enhancement = model_args.get(
+            "use_input_prior_enhancement", False
+        )
+        self.input_prior_mapper_type = model_args.get(
+            "input_prior_mapper_type", "mlp"
+        )
+        self.keep_output_prior_residual = model_args.get(
+            "keep_output_prior_residual",
+            model_args.get("use_prior_residual", True),
+        )
 
         self.td_codebook = None
         self.dw_codebook = None
@@ -125,6 +135,24 @@ class KASA_v2(nn.Module):
             else:
                 raise ValueError(f"Unsupported prior_mapper_type: {prior_mapper_type}")
             self.prior_mapper_type = prior_mapper_type
+
+        if self.use_input_prior_enhancement and self.input_dim > 3:
+            if self.input_prior_mapper_type == "mlp":
+                self.input_prior_mapper = nn.Sequential(
+                    nn.Linear(1, 16),
+                    nn.SiLU(),
+                    nn.Linear(16, 1),
+                )
+                nn.init.zeros_(self.input_prior_mapper[-1].weight)
+                nn.init.zeros_(self.input_prior_mapper[-1].bias)
+            elif self.input_prior_mapper_type == "linear":
+                self.input_prior_mapper = nn.Linear(1, 1)
+                nn.init.zeros_(self.input_prior_mapper.weight)
+                nn.init.zeros_(self.input_prior_mapper.bias)
+            else:
+                raise ValueError(
+                    f"Unsupported input_prior_mapper_type: {self.input_prior_mapper_type}"
+                )
 
         # Optional weekly template for debug scripts (not used in forward).
         self.slots_per_day = int(model_args.get("slots_per_day", 288))
@@ -210,10 +238,14 @@ class KASA_v2(nn.Module):
         else:
             spatial_codebook_for_encoder = self.spa_codebook
         
-        # 1. 准备主干输入 (只取前3通道)
-        # [B, L, N, 3] -> (Flow, TOD, DOW)
-        # 这样传给 encoder，维度就完美对齐了
-        main_input = history_data[..., :3]
+        # 1. 准备主干输入 (Flow, TOD, DOW) — channel 3 never enters temporal encoders
+        if self.use_input_prior_enhancement and self.input_dim > 3:
+            prior_data_for_input = history_data[..., 3:4]
+            flow_delta = self.input_prior_mapper(prior_data_for_input)
+            enhanced_flow = history_data[..., 0:1] + flow_delta
+            main_input = torch.cat([enhanced_flow, history_data[..., 1:3]], dim=-1)
+        else:
+            main_input = history_data[..., :3]
 
         # 2. Patching (Copy from LSTNN logic)
         in_len_add = ceil(1.0 * self.input_len / self.stride) * self.stride - self.input_len
@@ -251,7 +283,7 @@ class KASA_v2(nn.Module):
         history_flow = history_data[..., 0]  # [B, L, N]
         output = self.spatial_module.refine_prediction(output, history_flow)
         
-        if self.input_dim > 3:
+        if self.input_dim > 3 and self.keep_output_prior_residual:
             prior_data = history_data[..., 3:4]
             prior_residual = self.prior_mapper(prior_data)
             output = output + prior_residual
