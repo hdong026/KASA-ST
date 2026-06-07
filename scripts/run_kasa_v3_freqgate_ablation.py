@@ -42,6 +42,9 @@ REPORT_KEYS = [
     "use_freq_conditioned_fusion",
     "use_cross_st_gate",
     "use_spectral_decomp_gate",
+    "use_tf",
+    "use_fs",
+    "use_gate",
     "FORWARD_FEATURES",
     "TARGET_FEATURES",
 ]
@@ -144,8 +147,10 @@ def strip_hardcoded_cuda_devices(content: str) -> str:
 def variant_report(variant: str) -> dict:
     overrides = VARIANT_OVERRIDES[variant]
     base = overrides.get("base", "v3_freqgate")
+    arch = "KASA_v2" if base == "v2" else "KASA_v3_FreqGate"
+
     report = {
-        "architecture": "KASA_v2" if base == "v2" else "KASA_v3_FreqGate",
+        "architecture": arch,
         "use_pre_temporal_spatial_enhancement": overrides.get(
             "use_pre_temporal_spatial_enhancement", False
         ),
