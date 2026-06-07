@@ -77,6 +77,13 @@ def main() -> int:
             "use_cross_st_gate": True,
             "use_spectral_decomp_gate": True,
         },
+        "gate_no_freq": {
+            **base,
+            "use_frequency_guided_graph": False,
+            "use_freq_conditioned_fusion": False,
+            "use_cross_st_gate": True,
+            "use_spectral_decomp_gate": False,
+        },
     }
 
     print("KASA v3-freqgate smoke test")

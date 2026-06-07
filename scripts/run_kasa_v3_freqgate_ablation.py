@@ -26,6 +26,7 @@ DEFAULT_VARIANTS = [
     "v3_freq_global",
     "v3_freq_conditioned",
     "v3_freq_gate",
+    "v3_gate_no_freq",
     "v3_spectral_gate",
 ]
 DEFAULT_SEEDS = [1, 2, 3, 4, 5]
@@ -75,6 +76,14 @@ VARIANT_OVERRIDES: dict[str, dict] = {
         "use_spectral_decomp_gate": False,
         "keep_output_prior_residual": False,
     },
+    "v3_gate_no_freq": {
+        "base": "v3_freqgate",
+        "use_frequency_guided_graph": False,
+        "use_freq_conditioned_fusion": False,
+        "use_cross_st_gate": True,
+        "use_spectral_decomp_gate": False,
+        "keep_output_prior_residual": False,
+    },
     "v3_spectral_gate": {
         "base": "v3_freqgate",
         "use_frequency_guided_graph": True,
@@ -100,6 +109,8 @@ PAIRED_SECTIONS = [
     ("v3_freq_global", "v2_clean", "v3_freq_global - v2_clean", "v3_freq_global is worse than v2_clean"),
     ("v3_freq_conditioned", "v2_clean", "v3_freq_conditioned - v2_clean", "v3_freq_conditioned is worse than v2_clean"),
     ("v3_freq_gate", "v2_clean", "v3_freq_gate - v2_clean", "v3_freq_gate is worse than v2_clean"),
+    ("v3_gate_no_freq", "v2_clean", "v3_gate_no_freq - v2_clean", "v3_gate_no_freq is worse than v2_clean"),
+    ("v3_freq_gate", "v3_gate_no_freq", "v3_freq_gate - v3_gate_no_freq", "v3_freq_gate is worse than v3_gate_no_freq"),
     ("v3_spectral_gate", "v2_clean", "v3_spectral_gate - v2_clean", "v3_spectral_gate is worse than v2_clean"),
 ]
 

@@ -34,6 +34,19 @@ def mask_topk(logits, topk):
     return logits.masked_fill(~keep_mask, float("-inf"))
 
 
+def mask_topk_keep_diag(logits, topk):
+    """Top-k sparsification while always retaining diagonal (self-loop)."""
+    n = logits.shape[-1]
+    if not (0 < topk < n):
+        return logits
+    diag_idx = torch.arange(n, device=logits.device)
+    keep_mask = torch.zeros_like(logits, dtype=torch.bool)
+    keep_mask[..., diag_idx, diag_idx] = True
+    topk_index = torch.topk(logits, k=topk, dim=-1).indices
+    keep_mask.scatter_(-1, topk_index, True)
+    return logits.masked_fill(~keep_mask, float("-inf"))
+
+
 def load_adj_from_pickle(adj_mx_path):
     if not adj_mx_path or not os.path.exists(adj_mx_path):
         return None
@@ -49,6 +62,17 @@ def load_adj_from_pickle(adj_mx_path):
                 adj_obj = item
                 break
     return normalize_adj(torch.as_tensor(adj_obj, dtype=torch.float32))
+
+
+def _zero_init_last_linear(seq: nn.Sequential, bias_value: float = 0.0) -> None:
+    last = seq[-1]
+    if isinstance(last, nn.Linear):
+        nn.init.zeros_(last.weight)
+        nn.init.constant_(last.bias, bias_value)
+
+
+def _conservative_init_gate_last_linear(seq: nn.Sequential) -> None:
+    _zero_init_last_linear(seq, bias_value=-2.0)
 
 
 class GCNLayer(nn.Module):
@@ -131,7 +155,12 @@ class FreqGateSpatialModule(nn.Module):
         nn.init.xavier_uniform_(self.adaptive_dst)
 
         num_graphs = 4 if use_frequency_guided_graph else 3
-        self.global_graph_logits = nn.Parameter(torch.zeros(num_graphs))
+        if use_frequency_guided_graph:
+            base_init = torch.tensor([0.0, 0.0, 0.0, -2.0])
+        else:
+            base_init = torch.zeros(num_graphs)
+        self.base_graph_logits = nn.Parameter(base_init)
+
         self.graph_fusion_mlp = None
         if use_frequency_guided_graph and use_freq_conditioned_fusion:
             self.graph_fusion_mlp = nn.Sequential(
@@ -139,6 +168,7 @@ class FreqGateSpatialModule(nn.Module):
                 nn.SiLU(),
                 nn.Linear(graph_fusion_hidden, 4),
             )
+            _zero_init_last_linear(self.graph_fusion_mlp)
 
         self.freq_descriptor = None
         if use_frequency_guided_graph:
@@ -148,8 +178,9 @@ class FreqGateSpatialModule(nn.Module):
         self.gate_mlp = None
         self.gate_low_mlp = None
         self.gate_high_mlp = None
-        if use_cross_st_gate and use_frequency_guided_graph:
-            self.freq_gate_proj = nn.Linear(freq_dim, 1)
+        if use_cross_st_gate:
+            if use_frequency_guided_graph:
+                self.freq_gate_proj = nn.Linear(freq_dim, 1)
             if use_spectral_decomp_gate:
                 self.gate_low_mlp = nn.Sequential(
                     nn.Linear(3, gate_hidden),
@@ -161,12 +192,15 @@ class FreqGateSpatialModule(nn.Module):
                     nn.SiLU(),
                     nn.Linear(gate_hidden, 1),
                 )
+                _conservative_init_gate_last_linear(self.gate_low_mlp)
+                _conservative_init_gate_last_linear(self.gate_high_mlp)
             else:
                 self.gate_mlp = nn.Sequential(
                     nn.Linear(3, gate_hidden),
                     nn.SiLU(),
                     nn.Linear(gate_hidden, 1),
                 )
+                _conservative_init_gate_last_linear(self.gate_mlp)
 
         self.last_graph_fusion_weights = None
         self.last_gate_mean = None
@@ -207,8 +241,18 @@ class FreqGateSpatialModule(nn.Module):
     def _build_freq_adj(self, freq_emb):
         d = freq_emb.shape[-1]
         sim = torch.matmul(freq_emb, freq_emb.transpose(-1, -2)) / sqrt(d)
-        sim = mask_topk(sim, self.freq_topk)
+        sim = mask_topk_keep_diag(sim, self.freq_topk)
         return torch.softmax(sim, dim=-1)
+
+    def _graph_fusion_weights(self, freq_emb, batch_size):
+        base = self.base_graph_logits
+        if self.use_frequency_guided_graph and self.use_freq_conditioned_fusion and self.graph_fusion_mlp is not None:
+            if freq_emb is None:
+                raise ValueError("freq_emb is required for frequency-conditioned fusion")
+            freq_context = freq_emb.mean(dim=1)
+            delta = self.graph_fusion_mlp(freq_context)
+            return torch.softmax(base.unsqueeze(0) + delta, dim=-1)
+        return torch.softmax(base, dim=0).unsqueeze(0).expand(batch_size, -1)
 
     def _fuse_graphs(self, history_flow, freq_emb):
         batch_size = history_flow.shape[0]
@@ -216,29 +260,24 @@ class FreqGateSpatialModule(nn.Module):
         a_static = self._build_static_adj_batch(batch_size, device)
         a_adaptive = self._build_adaptive_adj().unsqueeze(0).expand(batch_size, -1, -1)
         a_dynamic = self._build_dynamic_adj(history_flow)
+        weights = self._graph_fusion_weights(freq_emb, batch_size)
+        self.last_graph_fusion_weights = weights.detach()
 
         if self.use_frequency_guided_graph:
+            if freq_emb is None:
+                raise ValueError("freq_emb is required when use_frequency_guided_graph=True")
             a_freq = self._build_freq_adj(freq_emb)
-            if self.use_freq_conditioned_fusion and self.graph_fusion_mlp is not None:
-                freq_context = freq_emb.mean(dim=1)
-                weights = torch.softmax(self.graph_fusion_mlp(freq_context), dim=-1)
-            else:
-                weights = torch.softmax(self.global_graph_logits, dim=0).unsqueeze(0).expand(batch_size, -1)
-            self.last_graph_fusion_weights = weights.detach()
-            a_hybrid = (
+            return (
                 weights[:, 0:1, None] * a_static
                 + weights[:, 1:2, None] * a_adaptive
                 + weights[:, 2:3, None] * a_dynamic
                 + weights[:, 3:4, None] * a_freq
             )
-            return a_hybrid
 
-        if self.use_freq_conditioned_fusion and self.graph_fusion_mlp is not None:
+        if self.use_freq_conditioned_fusion:
             raise ValueError(
                 "use_freq_conditioned_fusion=True requires use_frequency_guided_graph=True"
             )
-        weights = torch.softmax(self.global_graph_logits, dim=0).unsqueeze(0).expand(batch_size, -1)
-        self.last_graph_fusion_weights = weights.detach()
         return (
             weights[:, 0:1, None] * a_static
             + weights[:, 1:2, None] * a_adaptive
@@ -257,12 +296,17 @@ class FreqGateSpatialModule(nn.Module):
         low = low.reshape(b, n, h).permute(0, 2, 1).unsqueeze(-1)
         return low, x - low
 
-    def _expand_freq_gate(self, freq_emb, horizon):
-        gate = self.freq_gate_proj(freq_emb)
-        return gate.unsqueeze(1).expand(-1, horizon, -1, -1)
+    def _freq_gate_feature(self, freq_emb, horizon, batch_size, num_nodes, device, dtype):
+        if freq_emb is not None and self.freq_gate_proj is not None:
+            gate = self.freq_gate_proj(freq_emb)
+            return gate.unsqueeze(1).expand(-1, horizon, -1, -1)
+        return torch.zeros(batch_size, horizon, num_nodes, 1, device=device, dtype=dtype)
 
     def _apply_cross_gate(self, y_temporal, y_spatial, freq_emb):
-        freq_gate = self._expand_freq_gate(freq_emb, y_temporal.shape[1])
+        b, h, n, _ = y_temporal.shape
+        freq_gate = self._freq_gate_feature(
+            freq_emb, h, b, n, y_temporal.device, y_temporal.dtype
+        )
         if self.use_spectral_decomp_gate:
             yt_low, yt_high = self._lowpass_horizon(y_temporal)
             ys_low, ys_high = self._lowpass_horizon(y_spatial)
@@ -290,7 +334,7 @@ class FreqGateSpatialModule(nn.Module):
             y_temporal: [B, H, N, 1]
             history_flow: [B, T, N]
         """
-        del tod, dow  # reserved for future extensions; not used in v3-freqgate
+        del tod, dow
 
         freq_emb = None
         if self.use_frequency_guided_graph:
@@ -301,7 +345,9 @@ class FreqGateSpatialModule(nn.Module):
         a_hybrid = self._fuse_graphs(history_flow, freq_emb)
         y_spatial = self._spatial_propagate(y_temporal, a_hybrid)
 
-        if self.use_cross_st_gate and freq_emb is not None and self.freq_gate_proj is not None:
+        if self.use_cross_st_gate and (
+            self.gate_mlp is not None or self.gate_low_mlp is not None
+        ):
             return self._apply_cross_gate(y_temporal, y_spatial, freq_emb)
         return y_temporal + self.hybrid_alpha * y_spatial
 
