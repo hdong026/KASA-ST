@@ -105,6 +105,7 @@ class ABCDSpatialModule(nn.Module):
         hybrid_alpha=0.2,
         use_lightweight_spatial=False,
         light_alpha=0.05,
+        post_spatial_mode="hybrid",
     ):
         super().__init__()
         self.node_size = node_size
@@ -144,6 +145,7 @@ class ABCDSpatialModule(nn.Module):
 
         self.hybrid_alpha = hybrid_alpha
         self.light_alpha = light_alpha
+        self.post_spatial_mode = str(post_spatial_mode).lower()
 
         # Static adjacency buffer.
         self.register_buffer("adj_mx", None)
@@ -183,6 +185,8 @@ class ABCDSpatialModule(nn.Module):
         if self.use_hybrid_graph:
             self.hybrid_logits = nn.Parameter(torch.zeros(3))
 
+        self.last_adaptive_adj = None
+
     def _build_dynamic_adj(self, history_flow):
         node_signal = history_flow.permute(0, 2, 1)  # [B, N, L]
         query = F.normalize(self.dynamic_query(node_signal), p=2, dim=-1)
@@ -217,6 +221,40 @@ class ABCDSpatialModule(nn.Module):
         weights = torch.softmax(self.hybrid_logits, dim=0)
         return weights[0] * static_adj + weights[1] * adaptive_adj + weights[2] * dynamic_adj
 
+    def _static_adj_batch(self, history_flow, batch_size):
+        if self.adj_mx is not None:
+            return row_normalize(self.adj_mx).unsqueeze(0).expand(batch_size, -1, -1)
+        return torch.eye(self.node_size, device=history_flow.device).unsqueeze(0).expand(batch_size, -1, -1)
+
+    def _build_mode_adj(self, history_flow, mode: str):
+        batch_size = history_flow.shape[0]
+        static_adj = self._static_adj_batch(history_flow, batch_size)
+
+        if mode == "static_only":
+            return static_adj
+
+        adaptive_adj = self._build_adaptive_adj().unsqueeze(0).expand(batch_size, -1, -1)
+        if mode == "adaptive_only":
+            return adaptive_adj
+
+        dynamic_adj = self._build_dynamic_adj(history_flow)
+        if mode == "dynamic_only":
+            return dynamic_adj
+
+        if mode == "hybrid":
+            return self._build_hybrid_adj(history_flow)
+
+        if mode == "static_adaptive":
+            return 0.5 * static_adj + 0.5 * adaptive_adj
+
+        if mode == "static_dynamic":
+            return 0.5 * static_adj + 0.5 * dynamic_adj
+
+        if mode == "adaptive_dynamic":
+            return 0.5 * adaptive_adj + 0.5 * dynamic_adj
+
+        raise ValueError(f"Unsupported post_spatial_mode: {mode}")
+
     def get_enhanced_spatial_embedding(self, spa_codebook):
         """Scheme A/C: enhance spatial codebook before encoders."""
         if not self.if_spatial or spa_codebook is None:
@@ -234,7 +272,30 @@ class ABCDSpatialModule(nn.Module):
             output: [B, T, N, 1]
             history_flow: [B, L, N]
         """
+        if self.post_spatial_mode == "none":
+            return output
+
         x = output.squeeze(-1)
+
+        explicit_modes = {
+            "hybrid",
+            "static_only",
+            "adaptive_only",
+            "dynamic_only",
+            "static_adaptive",
+            "static_dynamic",
+            "adaptive_dynamic",
+        }
+        if self.post_spatial_mode in explicit_modes:
+            if self.post_spatial_mode == "adaptive_only":
+                adp_adj = self._build_adaptive_adj()
+                # Detach for safe graph spectral eigendecomposition (first version).
+                self.last_adaptive_adj = adp_adj.detach()
+                adj = adp_adj.unsqueeze(0).expand(history_flow.shape[0], -1, -1)
+            else:
+                adj = self._build_mode_adj(history_flow, self.post_spatial_mode)
+            refine = apply_adj(x, adj).unsqueeze(-1)
+            return output + self.hybrid_alpha * refine
 
         if self.use_hybrid_graph:
             hybrid_adj = self._build_hybrid_adj(history_flow)
@@ -248,6 +309,7 @@ class ABCDSpatialModule(nn.Module):
 
         if self.use_adaptive_adj:
             adp_adj = self._build_adaptive_adj()
+            self.last_adaptive_adj = adp_adj.detach()
             refine = apply_adj(x, adp_adj).unsqueeze(-1)
             return output + self.adp_alpha * refine
 
@@ -257,3 +319,11 @@ class ABCDSpatialModule(nn.Module):
             return output + self.light_alpha * smooth
 
         return output
+
+    def get_adaptive_adj(self):
+        """Return adaptive adjacency used in adaptive-only post-spatial refinement."""
+        if self.last_adaptive_adj is not None:
+            return self.last_adaptive_adj
+        if self.use_adaptive_adj or self.adaptive_src is not None:
+            return self._build_adaptive_adj().detach()
+        raise RuntimeError("Adaptive adjacency is not available for the current spatial configuration.")

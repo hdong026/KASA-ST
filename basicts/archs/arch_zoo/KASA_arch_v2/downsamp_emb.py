@@ -20,6 +20,7 @@ class DownsampEncoder(nn.Module):
         self.td_size = td_size
         self.dw_size = dw_size
         self.stride = stride
+        self.encoder_input_dim = input_dim
 
         self.data_embedding_layer = nn.Conv2d(in_channels=input_dim*patch_len, out_channels=d_d, kernel_size=(1, 1), bias=True)
 
@@ -77,7 +78,10 @@ class DownsampEncoder(nn.Module):
             spatial_emb = None
 
         # time series embedding
-        data_emb = self.data_embedding_layer(torch.concat((patch_input[..., 0], patch_input[..., 1], patch_input[..., 2]), dim=2).permute(0, 2, 1, 3)).permute(0, 2, 3, 1)  # B P N d_d
+        data_channels = [patch_input[..., i] for i in range(self.encoder_input_dim)]
+        data_emb = self.data_embedding_layer(
+            torch.concat(data_channels, dim=2).permute(0, 2, 1, 3)
+        ).permute(0, 2, 3, 1)  # B P N d_d
         data_emb = self.data_encoder(data_emb.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
 
         # spatial encoding

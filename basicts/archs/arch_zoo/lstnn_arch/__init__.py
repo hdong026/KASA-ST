@@ -1,3 +1,3 @@
-from .lstnn_arch import MultiscaleMLP
+from .lstnn_arch import MultiscaleMLP, SpectralMixLSTNN
 
-__all__ = ["MultiscaleMLP"]
+__all__ = ["MultiscaleMLP", "SpectralMixLSTNN"]

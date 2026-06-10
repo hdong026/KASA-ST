@@ -8,7 +8,7 @@ if _ROOT not in sys.path:
 from easydict import EasyDict
 from basicts.losses import masked_mae
 from basicts.data import TimeSeriesForecastingDataset
-from basicts.runners import SimpleTimeSeriesForecastingRunner
+from basicts.runners import STAEformerRunner
 from basicts.archs import STAEformer
 
 CFG = EasyDict()
@@ -16,7 +16,7 @@ CFG = EasyDict()
 # Source: GestaltCogTeam/BasicTS @ eb65f4b (baselines/STAEformer/PEMS04.py), 12->12 PeMS04
 
 CFG.DESCRIPTION = "STAEformer model configuration"
-CFG.RUNNER = SimpleTimeSeriesForecastingRunner
+CFG.RUNNER = STAEformerRunner
 CFG.DATASET_CLS = TimeSeriesForecastingDataset
 CFG.DATASET_NAME = "PEMS04"
 CFG.DATASET_TYPE = "Traffic flow"

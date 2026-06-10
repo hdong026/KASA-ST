@@ -27,7 +27,7 @@ from .arch_zoo.staeformer_arch import STAEformer
 from .arch_zoo.stwave_arch import STWave
 from .arch_zoo.stdn_arch import STDN
 from .arch_zoo.himnet_arch import HimNet
-from .arch_zoo.lstnn_arch import MultiscaleMLP
+from .arch_zoo.lstnn_arch import MultiscaleMLP, SpectralMixLSTNN
 
 __all__ = ["STID", "GraphWaveNet", "DCRNN",
            "D2STGNN", "STGCN", "MTGNN",
@@ -38,4 +38,4 @@ __all__ = ["STID", "GraphWaveNet", "DCRNN",
            "InformerStack", "Pyraformer",
            "KASA_v2", "TFSTGN", "KASA_v3", "KASA_v3_FreqGate", "KASA_v2_wo_spectral",
            "KASA_v2_wo_KAN", "KASA_v2_wo_GCN", "KASA_v2_w_bspline",
-           "STAEformer", "STWave", "STDN", "HimNet", "MultiscaleMLP"]
+           "STAEformer", "STWave", "STDN", "HimNet", "MultiscaleMLP", "SpectralMixLSTNN"]

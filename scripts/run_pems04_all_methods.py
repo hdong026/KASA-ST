@@ -157,7 +157,7 @@ def run_one(method: str, cfg_path: Path, gpu: str, seed: int) -> dict:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = LOG_DIR / f"{method}_seed{seed}_gpu{gpu}.log"
     env = os.environ.copy()
-    env.pop("CUDA_VISIBLE_DEVICES", None)
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu)
     cfg_arg = cfg_for_easytorch(cfg_path)
     cmd = [sys.executable, str(RUN_PY), "--cfg", cfg_arg, "--gpus", str(gpu)]
     row = {

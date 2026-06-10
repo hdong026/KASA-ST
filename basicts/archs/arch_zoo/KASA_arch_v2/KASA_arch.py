@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from basicts.archs.arch_zoo.KASA_arch_v2.patch_emb import PatchEncoder
 from basicts.archs.arch_zoo.KASA_arch_v2.downsamp_emb import DownsampEncoder
 from basicts.archs.arch_zoo.KASA_arch_v2.gcn import ABCDSpatialModule
+from basicts.archs.arch_zoo.KASA_arch_v2.graph_spectral import GraphSpectralCalibration
 
 # ==========================================
 # 最小限度的 KAN 定义 (局部定义，不影响其他)
@@ -65,6 +66,15 @@ class KASA_v2(nn.Module):
             model_args.get("use_prior_residual", True),
         )
         self.prior_source = model_args.get("prior_source", "history")
+        self.post_spatial_mode = model_args.get("post_spatial_mode", "hybrid")
+        self.use_patch_branch = model_args.get("use_patch_branch", True)
+        self.use_downsample_branch = model_args.get("use_downsample_branch", True)
+        self.use_linear_residual_branch = model_args.get("use_linear_residual_branch", True)
+        self.use_extra_prior_input = model_args.get("use_extra_prior_input", False)
+        self.main_input_dim = model_args.get("main_input_dim", 3)
+        self.use_graph_spectral_calibration = model_args.get(
+            "use_graph_spectral_calibration", False
+        )
 
         self.td_codebook = None
         self.dw_codebook = None
@@ -104,18 +114,20 @@ class KASA_v2(nn.Module):
             hybrid_alpha=model_args.get("hybrid_alpha", 0.2),
             use_lightweight_spatial=model_args.get("use_lightweight_spatial", False),
             light_alpha=model_args.get("light_alpha", 0.05),
+            post_spatial_mode=self.post_spatial_mode,
         )
 
-        # 🔥 关键修改 1: 强制传入 input_dim=3 给子模块
-        # 这样 patch_emb.py 就会创建 3 通道的卷积层，完美适配 concat(0,1,2)
-        # 这保证了主干网络和原版 LSTNN 100% 一致
-        encoder_input_dim = 3 
-        
+        encoder_input_dim = self.main_input_dim if self.use_extra_prior_input else 3
+
         self.patch_encoder = PatchEncoder(self.td_size, self.dw_size, self.td_codebook, self.dw_codebook, self.spa_codebook, self.if_time_in_day, self.if_day_in_week, self.if_spatial,
                                           encoder_input_dim, self.patch_len, self.stride, self.d_d, self.d_td, self.d_dw, self.d_spa, self.output_len, self.num_layer)
 
         self.downsamp_encoder = DownsampEncoder(self.td_size, self.dw_size, self.td_codebook, self.dw_codebook, self.spa_codebook, self.if_time_in_day, self.if_day_in_week, self.if_spatial,
                                           encoder_input_dim, self.patch_len, self.stride, self.d_d, self.d_td, self.d_dw, self.d_spa, self.output_len, self.num_layer)
+
+        self.graph_spectral_calibration = None
+        if self.use_graph_spectral_calibration:
+            self.graph_spectral_calibration = GraphSpectralCalibration(**model_args)
 
         # Main Residual (Standard LSTNN)
         self.residual = nn.Conv2d(in_channels=self.input_len, out_channels=self.output_len, kernel_size=(1, 1), bias=True)
@@ -245,6 +257,8 @@ class KASA_v2(nn.Module):
             flow_delta = self.input_prior_mapper(prior_data_for_input)
             enhanced_flow = history_data[..., 0:1] + flow_delta
             main_input = torch.cat([enhanced_flow, history_data[..., 1:3]], dim=-1)
+        elif self.use_extra_prior_input:
+            main_input = history_data[..., :self.main_input_dim]
         else:
             main_input = history_data[..., :3]
 
@@ -273,17 +287,40 @@ class KASA_v2(nn.Module):
         res_input = history_data[..., 0:1].permute(0, 1, 2, 3)
         res_out = self.residual(res_input)
 
-        # 🔥 【新增】如果是可视化模式，直接在这里返回骨干特征
         if kwargs.get("return_backbone", False):
-            return patch_predict + downsamp_predict
+            backbone_outputs = []
+            if self.use_patch_branch:
+                backbone_outputs.append(patch_predict)
+            if self.use_downsample_branch:
+                backbone_outputs.append(downsamp_predict)
+            if not backbone_outputs:
+                raise ValueError("At least one temporal branch must be enabled.")
+            return sum(backbone_outputs)
 
-        # Base Output (SOTA Performance Baseline)
-        output = patch_predict + downsamp_predict + res_out
+        branch_outputs = []
+        if self.use_patch_branch:
+            branch_outputs.append(patch_predict)
+        if self.use_downsample_branch:
+            branch_outputs.append(downsamp_predict)
+        if self.use_linear_residual_branch:
+            branch_outputs.append(res_out)
+        if not branch_outputs:
+            raise ValueError("At least one temporal branch must be enabled.")
+        output = sum(branch_outputs)
 
         # B/C/D scheme: refine prediction with spatial propagation.
         history_flow = history_data[..., 0]  # [B, L, N]
         output = self.spatial_module.refine_prediction(output, history_flow)
-        
+
+        if self.use_graph_spectral_calibration:
+            if self.post_spatial_mode != "adaptive_only":
+                raise ValueError(
+                    "Graph spectral calibration is only supported with "
+                    "post_spatial_mode='adaptive_only' in this experiment."
+                )
+            adaptive_adj = self.spatial_module.get_adaptive_adj()
+            output = self.graph_spectral_calibration(output, adaptive_adj)
+
         if self.input_dim > 3 and self.keep_output_prior_residual:
             if self.prior_source == "history":
                 prior_data = history_data[..., 3:4]

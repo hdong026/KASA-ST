@@ -14,7 +14,7 @@ if _ROOT not in sys.path:
 from easydict import EasyDict
 from basicts.losses import stwave_masked_mae
 from basicts.data import TimeSeriesForecastingDataset
-from basicts.runners import SimpleTimeSeriesForecastingRunner
+from basicts.runners import STWaveRunner
 from basicts.utils import load_adj
 from basicts.archs import STWave
 
@@ -52,7 +52,7 @@ def loadGraph(adj_mx, hs, ls):
 
 
 CFG.DESCRIPTION = "STWave model configuration"
-CFG.RUNNER = SimpleTimeSeriesForecastingRunner
+CFG.RUNNER = STWaveRunner
 CFG.DATASET_CLS = TimeSeriesForecastingDataset
 CFG.DATASET_NAME = "PEMS04"
 CFG.DATASET_TYPE = "Traffic flow"

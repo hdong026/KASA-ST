@@ -51,7 +51,6 @@ CFG.MODEL.PARAM = {
     "if_day_in_week": True,
     "if_spatial": True,
     "num_layer": 2,
-    "use_spectral_plugin": False,
 }
 CFG.MODEL.FORWARD_FEATURES = [0, 1, 2]  # traffic flow, time in day
 CFG.MODEL.TARGET_FEATURES = [0]  # traffic flow
