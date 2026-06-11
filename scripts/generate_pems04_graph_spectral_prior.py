@@ -131,6 +131,7 @@ def dump_training_package(
     output_dir: Path,
     index_path: Path,
     adj_path: Path,
+    scaler_path: Path | None = None,
     history_seq_len: int = HISTORY_SEQ_LEN,
     future_seq_len: int = FUTURE_SEQ_LEN,
 ) -> None:
@@ -138,12 +139,23 @@ def dump_training_package(
     data_pkl = output_dir / f"data_in{history_seq_len}_out{future_seq_len}.pkl"
     index_out = output_dir / f"index_in{history_seq_len}_out{future_seq_len}.pkl"
     adj_out = output_dir / "adj_mx.pkl"
+    scaler_src = scaler_path or (
+        DEFAULT_DATASET_DIR / f"scaler_in{history_seq_len}_out{future_seq_len}.pkl"
+    )
+    scaler_out = output_dir / scaler_src.name
 
     with open(data_pkl, "wb") as f:
         pickle.dump({"processed_data": processed_data.astype(np.float32)}, f)
     shutil.copy2(index_path, index_out)
     if adj_path.is_file():
         shutil.copy2(adj_path, adj_out)
+    if scaler_src.is_file():
+        shutil.copy2(scaler_src, scaler_out)
+    else:
+        raise FileNotFoundError(
+            f"Missing scaler file: {scaler_src}. "
+            "Run PeMS04 data preparation before generating graph spectral priors."
+        )
 
 
 def generate_prior(

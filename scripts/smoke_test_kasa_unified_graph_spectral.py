@@ -90,6 +90,17 @@ CASES = [
 def run_case(name: str, overrides: dict) -> None:
     channels = overrides.get("input_dim", 4)
     model = KASA_v2(**base_model_args(**overrides))
+    expected_encoder_dim = overrides.get("main_input_dim", 3)
+    if overrides.get("use_extra_prior_input", False):
+        assert model.patch_encoder.encoder_input_dim == expected_encoder_dim, (
+            f"{name}: patch encoder dim {model.patch_encoder.encoder_input_dim} "
+            f"!= {expected_encoder_dim}"
+        )
+        assert model.downsamp_encoder.encoder_input_dim == expected_encoder_dim, (
+            f"{name}: downsample encoder dim {model.downsamp_encoder.encoder_input_dim} "
+            f"!= {expected_encoder_dim}"
+        )
+
     history = torch.randn(2, 12, 307, channels)
     future = torch.randn(2, 12, 307, channels)
     out = model(history, future, batch_seen=1, epoch=0, train=False)

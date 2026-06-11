@@ -75,6 +75,9 @@ class KASA_v2(nn.Module):
         self.use_graph_spectral_calibration = model_args.get(
             "use_graph_spectral_calibration", False
         )
+        self.patch_data_input_mode = model_args.get("patch_data_input_mode", "all")
+        self.patch_embedding_mode = model_args.get("patch_embedding_mode", "serial_concat")
+        self.patch_feature_dim = model_args.get("patch_feature_dim", None)
 
         self.td_codebook = None
         self.dw_codebook = None
@@ -119,8 +122,28 @@ class KASA_v2(nn.Module):
 
         encoder_input_dim = self.main_input_dim if self.use_extra_prior_input else 3
 
-        self.patch_encoder = PatchEncoder(self.td_size, self.dw_size, self.td_codebook, self.dw_codebook, self.spa_codebook, self.if_time_in_day, self.if_day_in_week, self.if_spatial,
-                                          encoder_input_dim, self.patch_len, self.stride, self.d_d, self.d_td, self.d_dw, self.d_spa, self.output_len, self.num_layer)
+        self.patch_encoder = PatchEncoder(
+            self.td_size,
+            self.dw_size,
+            self.td_codebook,
+            self.dw_codebook,
+            self.spa_codebook,
+            self.if_time_in_day,
+            self.if_day_in_week,
+            self.if_spatial,
+            encoder_input_dim,
+            self.patch_len,
+            self.stride,
+            self.d_d,
+            self.d_td,
+            self.d_dw,
+            self.d_spa,
+            self.output_len,
+            self.num_layer,
+            patch_data_input_mode=self.patch_data_input_mode,
+            patch_embedding_mode=self.patch_embedding_mode,
+            patch_feature_dim=self.patch_feature_dim,
+        )
 
         self.downsamp_encoder = DownsampEncoder(self.td_size, self.dw_size, self.td_codebook, self.dw_codebook, self.spa_codebook, self.if_time_in_day, self.if_day_in_week, self.if_spatial,
                                           encoder_input_dim, self.patch_len, self.stride, self.d_d, self.d_td, self.d_dw, self.d_spa, self.output_len, self.num_layer)

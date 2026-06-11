@@ -271,6 +271,16 @@ def ensure_dataset_pkl(npz_path: Path, dataset_dir: Path, input_len: int = 12, o
     if adj_src.is_file() and not adj_dst.is_file():
         shutil.copy2(adj_src, adj_dst)
 
+    scaler_src = BASE_DATASET_DIR / f"scaler_in{input_len}_out{output_len}.pkl"
+    scaler_dst = dataset_dir / scaler_src.name
+    if scaler_src.is_file() and not scaler_dst.is_file():
+        shutil.copy2(scaler_src, scaler_dst)
+    elif not scaler_dst.is_file():
+        raise FileNotFoundError(
+            f"Missing scaler file: {scaler_src}. "
+            "Cannot build graph spectral dataset without base PeMS04 scaler."
+        )
+
 
 def check_required_prior_files(variants: list[str]) -> int:
     missing: dict[str, str] = {}
@@ -382,30 +392,73 @@ def parse_metrics(log_text: str) -> dict[str, float | None]:
 
 
 def collect_log_text(variant: str, seed: int, wrapper_log: Path | None) -> str:
+    """Collect wrapper log plus all checkpoint training logs (newest first).
+
+    Reading every training_log avoids false ``failed_no_metrics`` when EasyTorch
+    resumes from an epoch-100 checkpoint and the newest log has no test block.
+    """
     parts: list[str] = []
     if wrapper_log and wrapper_log.is_file():
         parts.append(wrapper_log.read_text(errors="replace"))
     ckpt_base = ckpt_dir_for(variant, seed)
     if ckpt_base.is_dir():
-        for tlog in sorted(
+        tlogs = sorted(
             ckpt_base.glob("*/training_log_*.log"),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
-        ):
+        )
+        for tlog in tlogs:
             parts.append(tlog.read_text(errors="replace"))
-            break
     return "\n".join(parts)
 
 
-def save_error_tail(wrapper_log: Path, variant: str, seed: int) -> str:
+ERROR_TAIL_LINES = 120
+SHOW_ERROR_LINES = 80
+
+
+def save_error_tail(
+    wrapper_log: Path,
+    variant: str,
+    seed: int,
+    tail_lines: int = ERROR_TAIL_LINES,
+) -> str:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     tail_path = LOG_DIR / f"{variant}_seed{seed}_error_tail.txt"
     if wrapper_log.is_file():
         lines = wrapper_log.read_text(errors="replace").splitlines()
-        tail_path.write_text("\n".join(lines[-100:]) + "\n", encoding="utf-8")
+        tail_path.write_text("\n".join(lines[-tail_lines:]) + "\n", encoding="utf-8")
     else:
         tail_path.write_text("", encoding="utf-8")
     return str(tail_path)
+
+
+def print_log_tail(
+    wrapper_log: Path,
+    variant: str,
+    seed: int,
+    lines: int = SHOW_ERROR_LINES,
+) -> None:
+    if not wrapper_log.is_file():
+        return
+    text_lines = wrapper_log.read_text(errors="replace").splitlines()
+    tail = text_lines[-lines:]
+    print(f"\n--- error tail: {variant} seed={seed} (last {len(tail)} lines) ---")
+    for line in tail:
+        print(line)
+    print("--- end error tail ---\n")
+
+
+def show_failed_errors(rows: list[dict], lines: int = SHOW_ERROR_LINES) -> None:
+    failed = [r for r in rows if str(r.get("status", "")).startswith("exit_")]
+    if not failed:
+        return
+    print("\nFailed run diagnostics:\n")
+    for row in sorted(failed, key=lambda r: (r["variant"], int(r["seed"]))):
+        log_path = Path(row.get("log_file", ""))
+        print(f"  {row['variant']} seed={row['seed']} status={row['status']}")
+        if row.get("error_tail_file"):
+            print(f"    error_tail_file: {row['error_tail_file']}")
+        print_log_tail(log_path, row["variant"], int(row["seed"]), lines=lines)
 
 
 class GPUQueue:
@@ -451,6 +504,7 @@ def run_one(variant: str, cfg_path: Path, gpu: str, seed: int) -> dict:
         if proc.returncode != 0:
             row["status"] = f"exit_{proc.returncode}"
             row["error_tail_file"] = save_error_tail(log_file, variant, seed)
+            print_log_tail(log_file, variant, seed)
         elif metrics["mae"] is None:
             row["status"] = "failed_no_metrics"
         else:
@@ -617,9 +671,12 @@ def write_outputs(rows: list[dict], out_csv: Path, out_md: Path, summary_csv: Pa
         "|---|---:|---:|---:|---:|---|\n",
     ]
     for r in rows:
+        status = r["status"]
+        if str(status).startswith("exit_") and r.get("error_tail_file"):
+            status = f"{status} ({r['error_tail_file']})"
         md.append(
             f"| {r['variant']} | {r['seed']} | {fmt_val(r['mae'])} | {fmt_val(r['rmse'])} | "
-            f"{fmt_val(r['mape'])} | {r['status']} |\n"
+            f"{fmt_val(r['mape'])} | {status} |\n"
         )
     md.append("\n## Summary\n\n")
     md.append(
@@ -682,6 +739,11 @@ def main() -> int:
     parser.add_argument("--markdown", default="results/pems04_kasa_unified_graph_spectral.md")
     parser.add_argument("--dry_run", action="store_true")
     parser.add_argument("--summary-only", "--summary_only", action="store_true", dest="summary_only")
+    parser.add_argument(
+        "--show_errors",
+        action="store_true",
+        help="Print last 80 log lines for failed variants after run/summary.",
+    )
     args = parser.parse_args()
 
     if not BASE_CFG.is_file():
@@ -709,6 +771,8 @@ def main() -> int:
         rows = [summarize_row(v, s) for v, _, s in jobs]
         write_outputs(rows, out_csv, out_md, summary_csv)
         print(f"Wrote {out_csv}, {out_md}, {summary_csv}")
+        if args.show_errors:
+            show_failed_errors(rows)
         return 0
 
     queue = GPUQueue(args.gpus)
@@ -736,6 +800,8 @@ def main() -> int:
 
     write_outputs(rows, out_csv, out_md, summary_csv)
     print(f"Wrote {out_csv}, {out_md}, {summary_csv}")
+    if args.show_errors:
+        show_failed_errors(rows)
     return 0
 
 
