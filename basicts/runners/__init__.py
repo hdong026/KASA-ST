@@ -17,6 +17,7 @@ from .runner_zoo.stdn_runner import STDNRunner
 from .runner_zoo.himnet_runner import HimNetRunner
 from .runner_zoo.staeformer_runner import STAEformerRunner
 from .runner_zoo.stwave_runner import STWaveRunner
+from .runner_zoo.chain_forecasting_runner import ChainForecastingRunner
 
 __all__ = ["BaseTimeSeriesForecastingRunner",
            "SimpleTimeSeriesForecastingRunner",
@@ -25,4 +26,4 @@ __all__ = ["BaseTimeSeriesForecastingRunner",
            "NewCrossformerRunner", "NewCrossformer2DRunner", "PatchTSTRunner",
            "InOutformerRunner","GWnetRunner", "DGCRNRunner",
            "STDNRunner", "HimNetRunner",
-           "STAEformerRunner", "STWaveRunner"]
+           "STAEformerRunner", "STWaveRunner", "ChainForecastingRunner"]
