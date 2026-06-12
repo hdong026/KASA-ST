@@ -14,8 +14,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE_CFG_CHAIN = ROOT / "examples" / "ChainForecasting" / "ChainForecasting_PEMS04.py"
-BASE_CFG_KASA = ROOT / "examples" / "KASAST_v2" / "KASAST_PEMS04.py"
+CHAIN_BASE_CFG = ROOT / "examples" / "ChainForecasting" / "ChainForecasting_PEMS04.py"
+KASA_BASE_CFG = ROOT / "examples" / "KASAST_v2" / "KASAST_PEMS04.py"
 RUN_PY = ROOT / "examples" / "run.py"
 TEMP_CFG_DIR = ROOT / "tmp_configs" / "chain_forecasting_pems04"
 LOG_DIR = ROOT / "results" / "chain_forecasting_pems04_logs"
@@ -23,15 +23,16 @@ CKPT_ROOT = ROOT / "checkpoints" / "chain_forecasting_pems04"
 
 DEFAULT_VARIANTS = [
     "kasa_baseline",
-    "chain_3_6_12",
+    "chain_3_6_12_final_spatial",
+    "chain_3_6_12_each_level_spatial",
+    "chain_3_6_12_no_spatial",
     "chain_6_12",
     "chain_3_12",
-    "chain_3_6_12_no_spatial",
-    "chain_3_6_12_no_down_memory",
+    "chain_3_6_12_no_prev_condition",
 ]
 DEFAULT_SEEDS = [1, 2, 3, 4, 5]
 
-KASA_BEST = {
+BEST_SETTINGS = {
     "use_patch_branch": True,
     "use_downsample_branch": True,
     "use_linear_residual_branch": True,
@@ -47,52 +48,52 @@ KASA_BEST = {
 }
 
 VARIANT_SPECS: dict[str, dict] = {
-    "kasa_baseline": {
-        "model_family": "kasa",
-    },
-    "chain_3_6_12": {
-        "model_family": "chain",
+    "kasa_baseline": {},
+    "chain_3_6_12_final_spatial": {
         "chain_lengths": [3, 6, 12],
         "chain_loss_weights": [0.2, 0.3, 1.0],
-        "use_final_spatial_refine": True,
-        "use_downsample_memory": True,
+        "use_prev_condition": True,
+        "spatial_placement": "final",
     },
-    "chain_6_12": {
-        "model_family": "chain",
-        "chain_lengths": [6, 12],
-        "chain_loss_weights": [0.3, 1.0],
-        "use_final_spatial_refine": True,
-        "use_downsample_memory": True,
-    },
-    "chain_3_12": {
-        "model_family": "chain",
-        "chain_lengths": [3, 12],
-        "chain_loss_weights": [0.2, 1.0],
-        "use_final_spatial_refine": True,
-        "use_downsample_memory": True,
+    "chain_3_6_12_each_level_spatial": {
+        "chain_lengths": [3, 6, 12],
+        "chain_loss_weights": [0.2, 0.3, 1.0],
+        "use_prev_condition": True,
+        "spatial_placement": "each_level",
     },
     "chain_3_6_12_no_spatial": {
-        "model_family": "chain",
         "chain_lengths": [3, 6, 12],
         "chain_loss_weights": [0.2, 0.3, 1.0],
-        "use_final_spatial_refine": False,
-        "use_downsample_memory": True,
+        "use_prev_condition": True,
+        "spatial_placement": "none",
     },
-    "chain_3_6_12_no_down_memory": {
-        "model_family": "chain",
+    "chain_6_12": {
+        "chain_lengths": [6, 12],
+        "chain_loss_weights": [0.3, 1.0],
+        "use_prev_condition": True,
+        "spatial_placement": "final",
+    },
+    "chain_3_12": {
+        "chain_lengths": [3, 12],
+        "chain_loss_weights": [0.2, 1.0],
+        "use_prev_condition": True,
+        "spatial_placement": "final",
+    },
+    "chain_3_6_12_no_prev_condition": {
         "chain_lengths": [3, 6, 12],
         "chain_loss_weights": [0.2, 0.3, 1.0],
-        "use_final_spatial_refine": True,
-        "use_downsample_memory": False,
+        "use_prev_condition": False,
+        "spatial_placement": "final",
     },
 }
 
 PAIRED_DIFFS = [
-    ("chain_3_6_12", "kasa_baseline"),
-    ("chain_6_12", "kasa_baseline"),
-    ("chain_3_12", "kasa_baseline"),
-    ("chain_3_6_12_no_spatial", "chain_3_6_12"),
-    ("chain_3_6_12_no_down_memory", "chain_3_6_12"),
+    ("chain_3_6_12_final_spatial", "kasa_baseline"),
+    ("chain_3_6_12_each_level_spatial", "chain_3_6_12_final_spatial"),
+    ("chain_3_6_12_no_spatial", "chain_3_6_12_final_spatial"),
+    ("chain_3_6_12_no_prev_condition", "chain_3_6_12_final_spatial"),
+    ("chain_6_12", "chain_3_6_12_final_spatial"),
+    ("chain_3_12", "chain_3_6_12_final_spatial"),
 ]
 
 METRIC_PATTERNS = {
@@ -109,10 +110,16 @@ ERROR_TAIL_LINES = 120
 SHOW_ERROR_LINES = 80
 
 
+def base_cfg_for_variant(variant: str) -> Path:
+    if variant == "kasa_baseline":
+        return KASA_BASE_CFG
+    return CHAIN_BASE_CFG
+
+
 def variant_spec(variant: str) -> dict:
     if variant not in VARIANT_SPECS:
         raise ValueError(f"Unknown variant: {variant}")
-    return VARIANT_SPECS[variant]
+    return {**BEST_SETTINGS, **VARIANT_SPECS[variant]}
 
 
 def ckpt_dir_for(variant: str, seed: int) -> Path:
@@ -145,12 +152,7 @@ def _py_literal(v) -> str:
 
 def generate_temp_config(variant: str, seed: int) -> Path:
     spec = variant_spec(variant)
-    model_family = spec.get("model_family", "chain")
-    if model_family == "kasa":
-        base_cfg = BASE_CFG_KASA
-    else:
-        base_cfg = BASE_CFG_CHAIN
-
+    base_cfg = base_cfg_for_variant(variant)
     content = strip_hardcoded_cuda_devices(base_cfg.read_text(encoding="utf-8"))
     lines = [
         "",
@@ -164,15 +166,10 @@ def generate_temp_config(variant: str, seed: int) -> Path:
         "CFG.MODEL.FORWARD_FEATURES = [0, 1, 2, 3]",
         "CFG.MODEL.TARGET_FEATURES = [0]",
     ]
-    if model_family == "kasa":
-        for key, val in KASA_BEST.items():
-            lines.append(f'CFG.MODEL.PARAM["{key}"] = {_py_literal(val)}')
-    else:
-        for key, val in spec.items():
-            if key == "model_family" or val is None:
-                continue
-            lines.append(f'CFG.MODEL.PARAM["{key}"] = {_py_literal(val)}')
-
+    for key, val in spec.items():
+        if val is None:
+            continue
+        lines.append(f'CFG.MODEL.PARAM["{key}"] = {_py_literal(val)}')
     out = temp_cfg_path(variant, seed)
     out.write_text(content + "\n".join(lines) + "\n", encoding="utf-8")
     return out
@@ -469,8 +466,11 @@ def write_outputs(rows: list[dict], out_csv: Path, out_md: Path, summary_csv: Pa
         "Protocol:\n",
         "official 6:2:2,\n",
         "TARGET=[0],\n",
-        "chain forecast states at increasing resolutions,\n",
-        "post_spatial_mode=adaptive_only for final refine.\n\n",
+        "full temporal branches,\n",
+        "post_spatial_mode=adaptive_only,\n",
+        "no temporal Fourier prior,\n",
+        "no output prior residual,\n",
+        "no pre-temporal spatial enhancement.\n\n",
         "## Per-run results\n\n",
         "| variant | seed | MAE | RMSE | MAPE | status |\n",
         "|---|---:|---:|---:|---:|---|\n",
@@ -514,17 +514,22 @@ def dry_run_info(variant: str, seed: int, cfg_path: Path) -> None:
     print(f"  [{variant} seed={seed}]")
     print(f"    cfg: {cfg_path}")
     print(f"    ckpt: {ckpt_dir_for(variant, seed)}")
-    family = spec.get("model_family", "chain")
-    if family == "kasa":
-        print("    model: KASA_v2 (baseline)")
-        print("    runner: SimpleTimeSeriesForecastingRunner")
-    else:
-        print("    model: ChainForecasting")
-        print("    runner: ChainForecastingRunner")
-        print(f"    chain_lengths: {spec.get('chain_lengths', [3, 6, 12])}")
-        print(f"    chain_loss_weights: {spec.get('chain_loss_weights', [0.2, 0.3, 1.0])}")
-        print(f"    use_final_spatial_refine: {spec.get('use_final_spatial_refine', True)}")
-        print(f"    use_downsample_memory: {spec.get('use_downsample_memory', True)}")
+    model_name = "KASA_v2" if variant == "kasa_baseline" else "ChainForecasting"
+    print(f"    model: {model_name}")
+    print(f"    chain_lengths: {spec.get('chain_lengths', [12])}")
+    print(f"    chain_loss_weights: {spec.get('chain_loss_weights', [1.0])}")
+    print(f"    use_prev_condition: {spec.get('use_prev_condition', True)}")
+    print(f"    spatial_placement: {spec.get('spatial_placement', 'final')}")
+    print(f"    patch_embedding_mode: {spec.get('patch_embedding_mode', 'serial_concat')}")
+    print(f"    patch_data_input_mode: {spec.get('patch_data_input_mode', 'all')}")
+    print(f"    use_patch_branch: {spec['use_patch_branch']}")
+    print(f"    use_downsample_branch: {spec['use_downsample_branch']}")
+    print(f"    use_linear_residual_branch: {spec['use_linear_residual_branch']}")
+    print(f"    post_spatial_mode: {spec['post_spatial_mode']}")
+    print(f"    use_pre_temporal_spatial_enhancement: {spec['use_pre_temporal_spatial_enhancement']}")
+    print(f"    keep_output_prior_residual: {spec['keep_output_prior_residual']}")
+    print(f"    use_extra_prior_input: {spec['use_extra_prior_input']}")
+    print(f"    main_input_dim: {spec['main_input_dim']}")
     print("    FORWARD_FEATURES: [0, 1, 2, 3]")
     print("    TARGET_FEATURES: [0]")
     print(f"    cmd: {cmd}")
@@ -535,8 +540,8 @@ def main() -> int:
     parser.add_argument("--variants", nargs="+", default=DEFAULT_VARIANTS, choices=list(VARIANT_SPECS.keys()))
     parser.add_argument("--seeds", type=int, nargs="+", default=DEFAULT_SEEDS)
     parser.add_argument("--gpus", nargs="+", default=["0"])
-    parser.add_argument("--out", default="results/pems04_chain_forecasting.csv")
-    parser.add_argument("--markdown", default="results/pems04_chain_forecasting.md")
+    parser.add_argument("--out", default="results/pems04_chain_forecasting_ablation.csv")
+    parser.add_argument("--markdown", default="results/pems04_chain_forecasting_ablation.md")
     parser.add_argument("--dry_run", action="store_true")
     parser.add_argument("--summary-only", "--summary_only", action="store_true", dest="summary_only")
     parser.add_argument(
@@ -546,11 +551,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not BASE_CFG_CHAIN.is_file():
-        print(f"Missing base config: {BASE_CFG_CHAIN}")
+    if not CHAIN_BASE_CFG.is_file():
+        print(f"Missing base config: {CHAIN_BASE_CFG}")
         return 1
-    if not BASE_CFG_KASA.is_file():
-        print(f"Missing KASA base config: {BASE_CFG_KASA}")
+    if not KASA_BASE_CFG.is_file():
+        print(f"Missing KASA base config: {KASA_BASE_CFG}")
         return 1
 
     out_csv = ROOT / args.out if not Path(args.out).is_absolute() else Path(args.out)

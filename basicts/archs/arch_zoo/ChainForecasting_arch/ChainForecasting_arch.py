@@ -1,179 +1,210 @@
-"""ChainForecasting: chain of future prediction states at increasing resolutions."""
-
-from __future__ import annotations
-
-from typing import List
-
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
+from torch import nn
 
-from basicts.archs.arch_zoo.KASA_arch_v2.gcn import ABCDSpatialModule
-from basicts.archs.arch_zoo.ChainForecasting_arch.chain_modules import (
-    CoarseForecastDecoder,
-    DownsampleMemoryEncoder,
-    ForecastTransitionBlock,
-    FutureQueryEmbedding,
-    HistoryPatchEncoder,
-    pool_target_to_length,
-    upsample_state,
+from basicts.archs.arch_zoo.ChainForecasting_arch.gcn import ABCDSpatialModule
+from basicts.archs.arch_zoo.ChainForecasting_arch.kasa_temporal_step import (
+    KASATemporalStep,
+    interpolate_forecast,
 )
 
 
 class ChainForecasting(nn.Module):
-    """Forecast chain X -> Y_hat_3 -> Y_hat_6 -> Y_hat_12 (configurable)."""
+    """Forecast-state chain using KASA temporal operators: X -> Y3 -> Y6 -> Y12."""
 
     def __init__(self, **model_args):
         super().__init__()
         self.node_size = model_args["node_size"]
         self.input_len = model_args["input_len"]
+        self.input_dim = model_args["input_dim"]
         self.output_len = model_args["output_len"]
-        self.input_dim = model_args.get("input_dim", 4)
-        self.main_input_dim = model_args.get("main_input_dim", 3)
+        self.patch_len = model_args["patch_len"]
+        self.stride = model_args.get("stride", model_args.get("patch_stride", 4))
+        self.td_size = model_args["td_size"]
+        self.dw_size = model_args["dw_size"]
+        self.d_td = model_args.get("d_td", 32)
+        self.d_dw = model_args.get("d_dw", 32)
+        self.d_d = model_args.get("d_d", model_args.get("d_model", 32))
+        self.d_spa = model_args.get("d_spa", 32)
+        self.num_layer = model_args.get("num_layer", 2)
 
-        self.chain_lengths: List[int] = list(model_args.get("chain_lengths", [3, 6, 12]))
+        self.if_time_in_day = model_args.get("if_time_in_day", True)
+        self.if_day_in_week = model_args.get("if_day_in_week", True)
+        self.if_spatial = model_args.get("if_spatial", True)
+        self.spatial_scheme = str(model_args.get("spatial_scheme", "C")).upper()
+
+        self.use_patch_branch = model_args.get("use_patch_branch", True)
+        self.use_downsample_branch = model_args.get("use_downsample_branch", True)
+        self.use_linear_residual_branch = model_args.get("use_linear_residual_branch", True)
+        self.patch_data_input_mode = model_args.get("patch_data_input_mode", "all")
+        self.patch_embedding_mode = model_args.get("patch_embedding_mode", "serial_concat")
+        self.patch_feature_dim = model_args.get("patch_feature_dim", None)
+
+        self.chain_lengths = list(model_args.get("chain_lengths", [3, 6, 12]))
+        self.chain_loss_weights = list(model_args.get("chain_loss_weights", [0.2, 0.3, 1.0]))
+        self.use_prev_condition = model_args.get("use_prev_condition", True)
+        self.spatial_placement = self._resolve_spatial_placement(model_args)
+        self.post_spatial_mode = model_args.get("post_spatial_mode", "adaptive_only")
+        self.use_pre_temporal_spatial_enhancement = model_args.get(
+            "use_pre_temporal_spatial_enhancement", False
+        )
+
         if self.chain_lengths[-1] != self.output_len:
             raise ValueError(
-                f"chain_lengths must end with output_len={self.output_len}, got {self.chain_lengths}"
+                f"Last chain length {self.chain_lengths[-1]} must equal output_len {self.output_len}"
             )
 
-        self.d_model = model_args.get("d_model", 64)
-        self.num_heads = model_args.get("num_heads", 4)
-        self.ffn_dim = model_args.get("ffn_dim", 128)
-        self.patch_len = model_args.get("patch_len", 3)
-        self.patch_stride = model_args.get("patch_stride", 3)
-        self.use_downsample_memory = model_args.get("use_downsample_memory", True)
-        self.use_final_spatial_refine = model_args.get("use_final_spatial_refine", True)
-        self.post_spatial_mode = model_args.get("post_spatial_mode", "adaptive_only")
-        self.td_size = model_args.get("td_size", 288)
-        self.dropout = model_args.get("dropout", 0.0)
+        self.td_codebook = None
+        self.dw_codebook = None
+        self.spa_codebook = None
+        if self.if_time_in_day:
+            self.td_codebook = nn.Parameter(torch.empty(self.td_size, self.d_td))
+            nn.init.xavier_uniform_(self.td_codebook)
+        if self.if_day_in_week:
+            self.dw_codebook = nn.Parameter(torch.empty(self.dw_size, self.d_dw))
+            nn.init.xavier_uniform_(self.dw_codebook)
+        if self.if_spatial:
+            self.spa_codebook = nn.Parameter(torch.empty(self.node_size, self.d_spa))
+            nn.init.xavier_uniform_(self.spa_codebook)
 
-        max_patches = max(4, (self.input_len - self.patch_len) // self.patch_stride + 1)
-        self.history_encoder = HistoryPatchEncoder(
-            input_dim=self.main_input_dim,
+        step_kwargs = dict(
+            input_len=self.input_len,
             patch_len=self.patch_len,
-            patch_stride=self.patch_stride,
-            d_model=self.d_model,
-            num_nodes=self.node_size,
-            max_patches=max_patches,
-            num_heads=self.num_heads,
-            ffn_dim=self.ffn_dim,
-            use_temporal_transformer=True,
-            dropout=self.dropout,
+            stride=self.stride,
+            td_size=self.td_size,
+            dw_size=self.dw_size,
+            td_codebook=self.td_codebook,
+            dw_codebook=self.dw_codebook,
+            spa_codebook=self.spa_codebook,
+            if_time_in_day=self.if_time_in_day,
+            if_day_in_week=self.if_day_in_week,
+            if_spatial=self.if_spatial,
+            d_d=self.d_d,
+            d_td=self.d_td,
+            d_dw=self.d_dw,
+            d_spa=self.d_spa,
+            num_layer=self.num_layer,
+            use_patch_branch=self.use_patch_branch,
+            use_downsample_branch=self.use_downsample_branch,
+            use_linear_residual_branch=self.use_linear_residual_branch,
+            patch_data_input_mode=self.patch_data_input_mode,
+            patch_embedding_mode=self.patch_embedding_mode,
+            patch_feature_dim=self.patch_feature_dim,
+            use_prev_condition=self.use_prev_condition,
         )
 
-        self.downsample_encoder = None
-        if self.use_downsample_memory:
-            self.downsample_encoder = DownsampleMemoryEncoder(
-                input_dim=self.main_input_dim,
-                d_model=self.d_model,
-                num_nodes=self.node_size,
-                pool_factor=2,
-            )
-
-        self.future_queries = nn.ModuleList([
-            FutureQueryEmbedding(future_len=flen, d_model=self.d_model, num_nodes=self.node_size, td_size=self.td_size)
-            for flen in self.chain_lengths
-        ])
-
-        self.coarse_decoder = CoarseForecastDecoder(
-            self.d_model, self.num_heads, self.ffn_dim, dropout=self.dropout
+        self.temporal_steps = nn.ModuleList(
+            [KASATemporalStep(output_len=k, **step_kwargs) for k in self.chain_lengths]
         )
-        self.transition_blocks = nn.ModuleList([
-            ForecastTransitionBlock(self.d_model, self.num_heads, self.ffn_dim, dropout=self.dropout)
-            for _ in range(len(self.chain_lengths) - 1)
-        ])
-        self.readout = nn.Linear(self.d_model, 1)
 
-        self.spatial_module = None
-        if self.use_final_spatial_refine:
-            self.spatial_module = ABCDSpatialModule(
-                node_size=self.node_size,
-                input_len=self.input_len,
-                d_spa=self.d_model,
-                if_spatial=True,
-                spatial_scheme="C",
-                adj_mx_path=model_args.get("adj_mx_path"),
-                use_gcn=False,
-                use_dynamic_spatial=False,
-                use_adaptive_adj=True,
-                adp_hidden_dim=model_args.get("adp_hidden_dim", 32),
-                adp_topk=model_args.get("adp_topk", 20),
-                adp_tau=model_args.get("adp_tau", 0.5),
-                use_hybrid_graph=False,
-                post_spatial_mode=self.post_spatial_mode,
-            )
+        self.spatial_module = ABCDSpatialModule(
+            node_size=self.node_size,
+            input_len=self.input_len,
+            d_spa=self.d_spa,
+            if_spatial=self.if_spatial,
+            spatial_scheme=self.spatial_scheme,
+            adj_mx_path=model_args.get("adj_mx_path"),
+            use_gcn=model_args.get("use_gcn", False),
+            gcn_hidden_dim=model_args.get("gcn_hidden_dim", 64),
+            use_dynamic_spatial=model_args.get("use_dynamic_spatial", False),
+            dyn_hidden_dim=model_args.get("dyn_hidden_dim", 64),
+            dyn_topk=model_args.get("dyn_topk", 20),
+            dyn_tau=model_args.get("dyn_tau", 0.5),
+            dyn_alpha=model_args.get("dyn_alpha", 0.15),
+            dyn_static_weight=model_args.get("dyn_static_weight", 0.2),
+            use_adaptive_adj=model_args.get("use_adaptive_adj", True),
+            adp_hidden_dim=model_args.get("adp_hidden_dim", 32),
+            adp_topk=model_args.get("adp_topk", 20),
+            adp_tau=model_args.get("adp_tau", 0.5),
+            adp_alpha=model_args.get("adp_alpha", 0.1),
+            use_hybrid_graph=model_args.get("use_hybrid_graph", False),
+            hybrid_alpha=model_args.get("hybrid_alpha", 0.2),
+            use_lightweight_spatial=model_args.get("use_lightweight_spatial", False),
+            light_alpha=model_args.get("light_alpha", 0.05),
+            post_spatial_mode=self.post_spatial_mode,
+        )
 
     @staticmethod
-    def build_chain_targets(y: torch.Tensor, chain_lengths: List[int]) -> List[torch.Tensor]:
-        """Pool future target y [B, F, N, 1] to each chain level."""
-        final_len = y.shape[1]
-        targets = []
-        for clen in chain_lengths:
-            if clen == final_len:
-                targets.append(y)
-            else:
-                targets.append(pool_target_to_length(y, clen))
-        return targets
-
-    def _encode_history(self, history_data: torch.Tensor) -> torch.Tensor:
-        x_main = history_data[..., : self.main_input_dim]
-        patch_mem = self.history_encoder(x_main)
-        if self.downsample_encoder is not None:
-            down_mem = self.downsample_encoder(x_main)
-            memory = torch.cat([patch_mem, down_mem], dim=1)
+    def _resolve_spatial_placement(model_args: dict) -> str:
+        if "spatial_placement" in model_args:
+            placement = str(model_args["spatial_placement"]).lower()
+        elif model_args.get("use_final_spatial_refine", True):
+            placement = "final"
         else:
-            memory = patch_mem
-        return memory
+            placement = "none"
+        if placement not in {"final", "each_level", "none"}:
+            raise ValueError(
+                f"Unsupported spatial_placement: {placement}. "
+                "Expected 'final', 'each_level', or 'none'."
+            )
+        return placement
 
-    def _decode_chain(self, history_data: torch.Tensor, memory: torch.Tensor):
-        chain_states = []
-        chain_preds = []
+    @staticmethod
+    def pool_target(future_target: torch.Tensor, target_len: int) -> torch.Tensor:
+        """Average-pool full future target [B, F, N, 1] to [B, target_len, N, 1]."""
+        target = future_target[..., :1]
+        batch_size, future_len, num_nodes, _ = target.shape
+        if future_len % target_len == 0:
+            group = future_len // target_len
+            return target.reshape(batch_size, target_len, group, num_nodes, 1).mean(dim=2)
+        x = target.permute(0, 2, 3, 1).reshape(batch_size * num_nodes, 1, future_len)
+        x = F.adaptive_avg_pool1d(x, target_len)
+        return x.reshape(batch_size, num_nodes, 1, target_len).permute(0, 3, 1, 2)
 
-        q0 = self.future_queries[0](history_data[..., : self.main_input_dim])
-        s0 = self.coarse_decoder(q0, memory)
-        chain_states.append(s0)
-        chain_preds.append(self.readout(s0))
+    def _spatial_codebook(self):
+        if self.use_pre_temporal_spatial_enhancement:
+            return self.spatial_module.get_enhanced_spatial_embedding(self.spa_codebook)
+        return self.spa_codebook
 
-        prev_state = s0
-        for level_idx in range(1, len(self.chain_lengths)):
-            prev_len = self.chain_lengths[level_idx - 1]
-            next_len = self.chain_lengths[level_idx]
-            prev_up = upsample_state(prev_state, next_len)
-            q_next = self.future_queries[level_idx](history_data[..., : self.main_input_dim])
-            s_next = self.transition_blocks[level_idx - 1](prev_up, q_next, memory)
-            chain_states.append(s_next)
-            chain_preds.append(self.readout(s_next))
-            prev_state = s_next
+    def _apply_spatial_refine(self, forecast: torch.Tensor, history_data: torch.Tensor) -> torch.Tensor:
+        history_flow = history_data[..., 0]
+        return self.spatial_module.refine_prediction(forecast, history_flow)
 
-        return chain_states, chain_preds
+    def _forward_chain(self, history_data: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        spatial_codebook = self._spatial_codebook()
+        chain_preds: list[torch.Tensor] = []
+        prev_forecast = None
+
+        for step_idx, step in enumerate(self.temporal_steps):
+            target_len = self.chain_lengths[step_idx]
+            if prev_forecast is not None and self.use_prev_condition:
+                prev_up = interpolate_forecast(prev_forecast, target_len)
+            else:
+                prev_up = None
+
+            y_k = step(
+                history_data,
+                prev_forecast=prev_up,
+                spatial_codebook=spatial_codebook,
+            )
+
+            if self.spatial_placement == "each_level":
+                y_k = self._apply_spatial_refine(y_k, history_data)
+
+            chain_preds.append(y_k)
+            prev_forecast = y_k
+
+        y_final = chain_preds[-1]
+        if self.spatial_placement == "final":
+            y_final = self._apply_spatial_refine(y_final, history_data)
+
+        return y_final, chain_preds
 
     def forward(
         self,
         history_data: torch.Tensor,
-        future_data=None,
+        future_data: torch.Tensor = None,
         batch_seen: int = 0,
         epoch: int = 0,
-        train: bool = True,
+        train: bool = False,
         return_all: bool = False,
         **kwargs,
     ):
-        """
-        Args:
-            history_data: [B, H, N, C]
-            return_all: if True, return dict with pred, chain_preds, chain_states
-        """
-        memory = self._encode_history(history_data)
-        chain_states, chain_preds = self._decode_chain(history_data, memory)
-
-        y_final = chain_preds[-1]
-        if self.use_final_spatial_refine and self.spatial_module is not None:
-            history_flow = history_data[..., 0]
-            y_final = self.spatial_module.refine_prediction(y_final, history_flow)
+        y_final, chain_preds = self._forward_chain(history_data)
 
         if return_all:
             return {
                 "pred": y_final,
                 "chain_preds": chain_preds,
-                "chain_states": chain_states,
             }
         return y_final
