@@ -6,7 +6,7 @@ class Forecast(nn.Module):
     def __init__(self, hidden_dim, fk_dim=None, **model_args):
         super().__init__()
         self.k_t = model_args['k_t']
-        self.output_seq_len = model_args['seq_length']
+        self.output_seq_len = model_args.get('output_seq_len', model_args['seq_length'])
         self.forecast_fc = nn.Linear(hidden_dim, fk_dim)
         self.model_args = model_args
 

@@ -5,7 +5,7 @@ import torch.nn as nn
 class Forecast(nn.Module):
     def __init__(self, hidden_dim, fk_dim, **model_args):
         super().__init__()
-        self.output_seq_len = model_args['seq_length']
+        self.output_seq_len = model_args.get('output_seq_len', model_args['seq_length'])
         self.model_args = model_args
 
         self.forecast_fc = nn.Linear(hidden_dim, fk_dim)

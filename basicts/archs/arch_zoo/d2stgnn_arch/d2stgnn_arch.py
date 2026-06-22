@@ -6,13 +6,15 @@ from .difusion_block import DifBlock
 from .inherent_block import InhBlock
 from .dynamic_graph_conv.dy_graph_conv import DynamicGraphConstructor
 from .decouple.estimation_gate import EstimationGate
+from .seq_lens import normalize_d2stgnn_seq_lens
 
 
 class DecoupleLayer(nn.Module):
     def __init__(self, hidden_dim, fk_dim=256, first=False, **model_args):
         super().__init__()
         self.spatial_gate = EstimationGate(
-            model_args['node_hidden'], model_args['time_emb_dim'], 64, model_args['seq_length'])
+            model_args['node_hidden'], model_args['time_emb_dim'], 64,
+            model_args.get('input_seq_len', model_args['seq_length']))
         self.dif_layer = DifBlock(hidden_dim, fk_dim=fk_dim, **model_args)
         self.inh_layer = InhBlock(
             hidden_dim, fk_dim=fk_dim, first=first, **model_args)
@@ -50,13 +52,14 @@ class D2STGNN(nn.Module):
     """
     def __init__(self, **model_args):
         super().__init__()
+        normalize_d2stgnn_seq_lens(model_args)
         # attributes
         self._in_feat = model_args['num_feat']
         self._hidden_dim = model_args['num_hidden']
         self._node_dim = model_args['node_hidden']
         self._forecast_dim = 256
         self._output_hidden = 512
-        self._output_dim = model_args['seq_length']
+        self._output_dim = model_args['output_seq_len']
 
         self._num_nodes = model_args['num_nodes']
         self._k_s = model_args['k_s']

@@ -18,6 +18,8 @@ from .arch_zoo.pyraformer_arch import Pyraformer
 from .arch_zoo.KASA_arch_v2 import KASA_v2
 from .arch_zoo.C2F_arch import C2F
 from .arch_zoo.ChainForecasting_arch import ChainForecasting
+from .arch_zoo.ForecastStateFlow_arch import ForecastStateFlow
+from .arch_zoo.STForecastStateFlow_arch import STForecastStateFlow
 from .arch_zoo.TFSTGN_arch import TFSTGN
 from .arch_zoo.KASA_arch_v3 import KASA_v3
 from .arch_zoo.KASA_arch_v3_freqgate import KASA_v3_FreqGate
@@ -38,6 +40,6 @@ __all__ = ["STID", "GraphWaveNet", "DCRNN",
            "DLinear", "NLinear", "Autoformer",
            "HINetwork", "FEDformer", "Informer",
            "InformerStack", "Pyraformer",
-           "KASA_v2", "C2F", "ChainForecasting", "TFSTGN", "KASA_v3", "KASA_v3_FreqGate", "KASA_v2_wo_spectral",
+           "KASA_v2", "C2F", "ChainForecasting", "ForecastStateFlow", "STForecastStateFlow", "TFSTGN", "KASA_v3", "KASA_v3_FreqGate", "KASA_v2_wo_spectral",
            "KASA_v2_wo_KAN", "KASA_v2_wo_GCN", "KASA_v2_w_bspline",
            "STAEformer", "STWave", "STDN", "HimNet", "MultiscaleMLP", "SpectralMixLSTNN"]

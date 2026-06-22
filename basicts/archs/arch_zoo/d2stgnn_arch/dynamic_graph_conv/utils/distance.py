@@ -10,7 +10,7 @@ class DistanceFunction(nn.Module):
         self.hidden_dim = model_args['num_hidden']
         self.node_dim   = model_args['node_hidden']
         self.time_slot_emb_dim  = self.hidden_dim
-        self.input_seq_len      = model_args['seq_length']
+        self.input_seq_len      = model_args.get('input_seq_len', model_args['seq_length'])
         # Time Series Feature Extraction
         self.dropout    = nn.Dropout(model_args['dropout'])
         self.fc_ts_emb1 = nn.Linear(self.input_seq_len, self.hidden_dim * 2)
