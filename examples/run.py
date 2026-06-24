@@ -6,11 +6,6 @@ from argparse import ArgumentParser
 root_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if root_path not in sys.path:
     sys.path.insert(0, root_path)
-import torch
-from basicts import launch_training
-from basicts.data.dataset import TimeSeriesForecastingDataset
-
-torch.set_num_threads(1) # aviod high cpu avg usage
 
 
 def parse_args():
@@ -59,11 +54,22 @@ def parse_args():
     # parser.add_argument("-c", "--cfg", default="examples/Pyraformer/Pyraformer_METR-LA_in96_out96.py", help="training config")
     # parser.add_argument("-c", "--cfg", default="examples/PatchTST/PatchTST_ETTh1.py", help="training config")
     parser.add_argument("-c", "--cfg", default="examples/LSTNN/LSTNN_PEMS04.py", help="training config")
-    parser.add_argument("--gpus", default="1", help="visible gpus")
+    parser.add_argument("--gpus", default="1", help="visible gpus (CUDA_VISIBLE_DEVICES)")
     return parser.parse_args()
 
-if __name__ == "__main__":
-    args = parse_args()
 
+def main():
+    args = parse_args()
+    # Must set before importing torch, otherwise CUDA binds to physical GPU 0.
+    if args.gpus is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpus)
+
+    import torch
+    from basicts import launch_training
+
+    torch.set_num_threads(1)  # aviod high cpu avg usage
     launch_training(args.cfg, args.gpus)
 
+
+if __name__ == "__main__":
+    main()

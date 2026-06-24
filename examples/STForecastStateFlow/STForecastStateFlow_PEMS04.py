@@ -48,7 +48,7 @@ CFG.MODEL.PARAM = {
     "adj_mx_path": os.path.join("datasets", CFG.DATASET_NAME, "adj_mx.pkl"),
     "final_loss_weight": 1.0,
     "state_loss_weight": 0.3,
-    "native_loss_weight": 0.1,
+    "native_loss_weight": 0,
     "fm_loss_weight": 0.2,
 }
 CFG.MODEL.FORWARD_FEATURES = [0, 1, 2, 3]

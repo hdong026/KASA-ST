@@ -124,6 +124,61 @@ class ChainForecasting(nn.Module):
             post_spatial_mode=self.post_spatial_mode,
         )
 
+        self.progressive_spatial_modules = nn.ModuleList()
+        if self.spatial_placement == "interleaved_progressive":
+            ratios = self._fit_stage_list(
+                model_args.get("progressive_spatial_ratios", [0.25, 0.5, 1.0]),
+                len(self.chain_lengths),
+            )
+            alphas = self._fit_stage_list(
+                model_args.get("progressive_spatial_alphas", [0.03, 0.06, 0.10]),
+                len(self.chain_lengths),
+            )
+            topks = self._fit_stage_list(
+                model_args.get("progressive_spatial_topks", [8, 16, 32]),
+                len(self.chain_lengths),
+            )
+            for ratio, alpha, topk in zip(ratios, alphas, topks):
+                self.progressive_spatial_modules.append(
+                    ABCDSpatialModule(
+                        node_size=self.node_size,
+                        input_len=self.input_len,
+                        d_spa=self.d_spa,
+                        if_spatial=self.if_spatial,
+                        spatial_scheme=self.spatial_scheme,
+                        adj_mx_path=model_args.get("adj_mx_path"),
+                        use_gcn=model_args.get("use_gcn", False),
+                        gcn_hidden_dim=model_args.get("gcn_hidden_dim", 64),
+                        use_dynamic_spatial=model_args.get("use_dynamic_spatial", False),
+                        dyn_hidden_dim=max(8, int(model_args.get("dyn_hidden_dim", 64) * ratio)),
+                        dyn_topk=topk,
+                        dyn_tau=model_args.get("dyn_tau", 0.5),
+                        dyn_alpha=alpha,
+                        dyn_static_weight=model_args.get("dyn_static_weight", 0.2),
+                        use_adaptive_adj=model_args.get("use_adaptive_adj", True),
+                        adp_hidden_dim=max(8, int(model_args.get("adp_hidden_dim", 32) * ratio)),
+                        adp_topk=topk,
+                        adp_tau=model_args.get("adp_tau", 0.5),
+                        adp_alpha=alpha,
+                        use_hybrid_graph=model_args.get("use_hybrid_graph", False),
+                        hybrid_alpha=alpha,
+                        use_lightweight_spatial=model_args.get("use_lightweight_spatial", False),
+                        light_alpha=alpha,
+                        post_spatial_mode=self.post_spatial_mode,
+                    )
+                )
+
+    @staticmethod
+    def _fit_stage_list(values: list, num_stages: int) -> list:
+        values = list(values)
+        if num_stages <= 0:
+            return []
+        if not values:
+            raise ValueError("Progressive spatial config lists must be non-empty.")
+        if len(values) >= num_stages:
+            return values[:num_stages]
+        return values + [values[-1]] * (num_stages - len(values))
+
     @staticmethod
     def _resolve_spatial_placement(model_args: dict) -> str:
         if "spatial_placement" in model_args:
@@ -132,10 +187,10 @@ class ChainForecasting(nn.Module):
             placement = "final"
         else:
             placement = "none"
-        if placement not in {"final", "each_level", "none"}:
+        if placement not in {"final", "each_level", "none", "interleaved_progressive"}:
             raise ValueError(
                 f"Unsupported spatial_placement: {placement}. "
-                "Expected 'final', 'each_level', or 'none'."
+                "Expected 'final', 'each_level', 'none', or 'interleaved_progressive'."
             )
         return placement
 
@@ -160,9 +215,23 @@ class ChainForecasting(nn.Module):
         history_flow = history_data[..., 0]
         return self.spatial_module.refine_prediction(forecast, history_flow)
 
-    def _forward_chain(self, history_data: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor]]:
+    def _apply_progressive_spatial_refine(
+        self,
+        forecast: torch.Tensor,
+        history_data: torch.Tensor,
+        stage_idx: int,
+    ) -> torch.Tensor:
+        history_flow = history_data[..., 0]
+        module = self.progressive_spatial_modules[stage_idx]
+        return module.refine_prediction(forecast, history_flow)
+
+    def _forward_chain(
+        self, history_data: torch.Tensor
+    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
         spatial_codebook = self._spatial_codebook()
         chain_preds: list[torch.Tensor] = []
+        temporal_preds: list[torch.Tensor] = []
+        spatial_preds: list[torch.Tensor] = []
         prev_forecast = None
 
         for step_idx, step in enumerate(self.temporal_steps):
@@ -172,23 +241,29 @@ class ChainForecasting(nn.Module):
             else:
                 prev_up = None
 
-            y_k = step(
+            t_k = step(
                 history_data,
                 prev_forecast=prev_up,
                 spatial_codebook=spatial_codebook,
             )
 
-            if self.spatial_placement == "each_level":
-                y_k = self._apply_spatial_refine(y_k, history_data)
+            if self.spatial_placement == "interleaved_progressive":
+                z_k = self._apply_progressive_spatial_refine(t_k, history_data, step_idx)
+            elif self.spatial_placement == "each_level":
+                z_k = self._apply_spatial_refine(t_k, history_data)
+            else:
+                z_k = t_k
 
-            chain_preds.append(y_k)
-            prev_forecast = y_k
+            temporal_preds.append(t_k)
+            spatial_preds.append(z_k)
+            chain_preds.append(z_k)
+            prev_forecast = z_k
 
         y_final = chain_preds[-1]
         if self.spatial_placement == "final":
             y_final = self._apply_spatial_refine(y_final, history_data)
 
-        return y_final, chain_preds
+        return y_final, chain_preds, temporal_preds, spatial_preds
 
     def forward(
         self,
@@ -200,11 +275,13 @@ class ChainForecasting(nn.Module):
         return_all: bool = False,
         **kwargs,
     ):
-        y_final, chain_preds = self._forward_chain(history_data)
+        y_final, chain_preds, temporal_preds, spatial_preds = self._forward_chain(history_data)
 
         if return_all:
             return {
                 "pred": y_final,
                 "chain_preds": chain_preds,
+                "temporal_preds": temporal_preds,
+                "spatial_preds": spatial_preds,
             }
         return y_final

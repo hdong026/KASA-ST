@@ -98,9 +98,47 @@ def main() -> int:
     test_forward("spatial_final", {"spatial_placement": "final"})
     test_forward("spatial_each_level", {"spatial_placement": "each_level"})
     test_forward("spatial_none", {"spatial_placement": "none"})
+    test_interleaved_progressive()
     test_pool_target()
     print("All smoke tests passed.")
     return 0
+
+
+def test_interleaved_progressive() -> None:
+    args = base_model_args(
+        spatial_placement="interleaved_progressive",
+        progressive_spatial_ratios=[0.25, 0.5, 1.0],
+        progressive_spatial_alphas=[0.03, 0.06, 0.10],
+        progressive_spatial_topks=[8, 16, 32],
+        adj_mx_path=os.path.join(ROOT, "datasets", "PEMS04", "adj_mx.pkl"),
+    )
+    model = ChainForecasting(**args)
+    history = torch.randn(2, 12, 307, 4)
+    future = torch.randn(2, 12, 307, 4)
+
+    out = model(history, return_all=True)
+    assert out["pred"].shape == (2, 12, 307, 1)
+    lengths = [3, 6, 12]
+    for i, r in enumerate(lengths):
+        assert out["temporal_preds"][i].shape == (2, r, 307, 1)
+        assert out["spatial_preds"][i].shape == (2, r, 307, 1)
+        assert out["chain_preds"][i].shape == (2, r, 307, 1)
+        assert torch.equal(out["chain_preds"][i], out["spatial_preds"][i])
+
+    # prev_forecast propagation: spatial Z feeds next temporal step
+    model.eval()
+    with torch.no_grad():
+        out2 = model(history, return_all=True)
+        assert torch.equal(out2["pred"], out2["spatial_preds"][-1])
+        assert not torch.allclose(out2["temporal_preds"][-1], out2["spatial_preds"][-1])
+
+    # old modes unchanged
+    for placement in ("final", "each_level", "none"):
+        m = ChainForecasting(**base_model_args(spatial_placement=placement))
+        o = m(history, return_all=True)
+        assert "temporal_preds" in o and "spatial_preds" in o
+
+    print("[ok] interleaved_progressive: shapes and pred==S_all")
 
 
 if __name__ == "__main__":
