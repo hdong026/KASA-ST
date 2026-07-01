@@ -3,9 +3,11 @@ import torch.nn.functional as F
 from torch import nn
 
 from basicts.archs.arch_zoo.ChainForecasting_arch.gcn import ABCDSpatialModule
+from basicts.archs.arch_zoo.ChainForecasting_arch.kasa_hidden_step import KASAHiddenStep
 from basicts.archs.arch_zoo.ChainForecasting_arch.kasa_temporal_step import (
     KASATemporalStep,
     interpolate_forecast,
+    interpolate_latent,
 )
 
 
@@ -43,13 +45,38 @@ class ChainForecasting(nn.Module):
         self.chain_lengths = list(model_args.get("chain_lengths", [3, 6, 12]))
         self.chain_loss_weights = list(model_args.get("chain_loss_weights", [0.2, 0.3, 1.0]))
         self.use_prev_condition = model_args.get("use_prev_condition", True)
+        self.architecture_mode = str(model_args.get("architecture_mode", "chain")).lower()
+        if self.architecture_mode not in {"chain", "direct_matched"}:
+            raise ValueError(
+                f"Unsupported architecture_mode: {self.architecture_mode}. "
+                "Expected 'chain' or 'direct_matched'."
+            )
+        self.matched_stage_lengths = list(
+            model_args.get("matched_stage_lengths", self.chain_lengths)
+        )
+        self.matched_hidden_dim = int(
+            model_args.get("matched_hidden_dim", model_args.get("latent_prop_dim", self.d_d))
+        )
+        self.propagation_mode = str(model_args.get("propagation_mode", "forecast_state")).lower()
+        if self.propagation_mode not in {"forecast_state", "latent"}:
+            raise ValueError(
+                f"Unsupported propagation_mode: {self.propagation_mode}. "
+                "Expected 'forecast_state' or 'latent'."
+            )
+        self.latent_prop_dim = int(model_args.get("latent_prop_dim", self.d_d))
         self.spatial_placement = self._resolve_spatial_placement(model_args)
         self.post_spatial_mode = model_args.get("post_spatial_mode", "adaptive_only")
         self.use_pre_temporal_spatial_enhancement = model_args.get(
             "use_pre_temporal_spatial_enhancement", False
         )
 
-        if self.chain_lengths[-1] != self.output_len:
+        if self.architecture_mode == "direct_matched":
+            if self.matched_stage_lengths[-1] != self.output_len:
+                raise ValueError(
+                    f"Last matched stage length {self.matched_stage_lengths[-1]} "
+                    f"must equal output_len {self.output_len}"
+                )
+        elif self.chain_lengths[-1] != self.output_len:
             raise ValueError(
                 f"Last chain length {self.chain_lengths[-1]} must equal output_len {self.output_len}"
             )
@@ -93,9 +120,78 @@ class ChainForecasting(nn.Module):
             use_prev_condition=self.use_prev_condition,
         )
 
-        self.temporal_steps = nn.ModuleList(
-            [KASATemporalStep(output_len=k, **step_kwargs) for k in self.chain_lengths]
-        )
+        self.temporal_steps = nn.ModuleList()
+        self.hidden_steps = nn.ModuleList()
+        self.final_temporal_step = None
+        self.latent_encoders = nn.ModuleList()
+
+        if self.architecture_mode == "direct_matched":
+            matched_num_layer = int(model_args.get("matched_num_layer", self.num_layer))
+            hidden_kwargs = dict(
+                input_len=self.input_len,
+                patch_len=self.patch_len,
+                stride=self.stride,
+                td_size=self.td_size,
+                dw_size=self.dw_size,
+                td_codebook=self.td_codebook,
+                dw_codebook=self.dw_codebook,
+                spa_codebook=self.spa_codebook,
+                if_time_in_day=self.if_time_in_day,
+                if_day_in_week=self.if_day_in_week,
+                if_spatial=self.if_spatial,
+                d_d=self.d_d,
+                d_td=self.d_td,
+                d_dw=self.d_dw,
+                d_spa=self.d_spa,
+                num_layer=matched_num_layer,
+                hidden_dim=self.matched_hidden_dim,
+                use_patch_branch=self.use_patch_branch,
+                use_downsample_branch=self.use_downsample_branch,
+                use_linear_residual_branch=False,
+                patch_data_input_mode=self.patch_data_input_mode,
+                patch_embedding_mode=self.patch_embedding_mode,
+                patch_feature_dim=self.patch_feature_dim,
+            )
+            for step_idx, internal_len in enumerate(self.matched_stage_lengths[:-1]):
+                self.hidden_steps.append(
+                    KASAHiddenStep(
+                        internal_len=internal_len,
+                        latent_cond_dim=self.matched_hidden_dim if step_idx > 0 else 0,
+                        **hidden_kwargs,
+                    )
+                )
+            final_step_kwargs = dict(step_kwargs, num_layer=matched_num_layer, use_prev_condition=False)
+            self.final_temporal_step = KASATemporalStep(
+                output_len=self.output_len,
+                latent_cond_dim=self.matched_hidden_dim if self.hidden_steps else 0,
+                **final_step_kwargs,
+            )
+        else:
+            for step_idx, k in enumerate(self.chain_lengths):
+                latent_cond_dim = (
+                    self.latent_prop_dim
+                    if self.propagation_mode == "latent" and step_idx > 0
+                    else 0
+                )
+                self.temporal_steps.append(
+                    KASATemporalStep(
+                        output_len=k,
+                        latent_cond_dim=latent_cond_dim,
+                        **step_kwargs,
+                    )
+                )
+
+            num_transitions = max(len(self.chain_lengths) - 1, 0)
+            self.latent_encoders = nn.ModuleList()
+            if self.propagation_mode == "latent" and num_transitions > 0:
+                for _ in range(num_transitions):
+                    self.latent_encoders.append(
+                        nn.Sequential(
+                            nn.Linear(1, self.latent_prop_dim),
+                            nn.GELU(),
+                            nn.Linear(self.latent_prop_dim, self.latent_prop_dim),
+                        )
+                    )
 
         self.spatial_module = ABCDSpatialModule(
             node_size=self.node_size,
@@ -125,18 +221,23 @@ class ChainForecasting(nn.Module):
         )
 
         self.progressive_spatial_modules = nn.ModuleList()
+        spatial_stage_count = (
+            len(self.matched_stage_lengths)
+            if self.architecture_mode == "direct_matched"
+            else len(self.chain_lengths)
+        )
         if self.spatial_placement == "interleaved_progressive":
             ratios = self._fit_stage_list(
                 model_args.get("progressive_spatial_ratios", [0.25, 0.5, 1.0]),
-                len(self.chain_lengths),
+                spatial_stage_count,
             )
             alphas = self._fit_stage_list(
                 model_args.get("progressive_spatial_alphas", [0.03, 0.06, 0.10]),
-                len(self.chain_lengths),
+                spatial_stage_count,
             )
             topks = self._fit_stage_list(
                 model_args.get("progressive_spatial_topks", [8, 16, 32]),
-                len(self.chain_lengths),
+                spatial_stage_count,
             )
             for ratio, alpha, topk in zip(ratios, alphas, topks):
                 self.progressive_spatial_modules.append(
@@ -233,19 +334,30 @@ class ChainForecasting(nn.Module):
         temporal_preds: list[torch.Tensor] = []
         spatial_preds: list[torch.Tensor] = []
         prev_forecast = None
+        prev_latent = None
 
         for step_idx, step in enumerate(self.temporal_steps):
             target_len = self.chain_lengths[step_idx]
-            if prev_forecast is not None and self.use_prev_condition:
+            prev_up = None
+            if (
+                self.propagation_mode == "forecast_state"
+                and prev_forecast is not None
+                and self.use_prev_condition
+            ):
                 prev_up = interpolate_forecast(prev_forecast, target_len)
-            else:
-                prev_up = None
 
-            t_k = step(
-                history_data,
-                prev_forecast=prev_up,
-                spatial_codebook=spatial_codebook,
-            )
+            if self.propagation_mode == "latent" and prev_latent is not None:
+                t_k = step(
+                    history_data,
+                    prev_latent=prev_latent,
+                    spatial_codebook=spatial_codebook,
+                )
+            else:
+                t_k = step(
+                    history_data,
+                    prev_forecast=prev_up,
+                    spatial_codebook=spatial_codebook,
+                )
 
             if self.spatial_placement == "interleaved_progressive":
                 z_k = self._apply_progressive_spatial_refine(t_k, history_data, step_idx)
@@ -257,13 +369,47 @@ class ChainForecasting(nn.Module):
             temporal_preds.append(t_k)
             spatial_preds.append(z_k)
             chain_preds.append(z_k)
-            prev_forecast = z_k
+
+            if self.propagation_mode == "latent":
+                if step_idx < len(self.latent_encoders):
+                    h_k = self.latent_encoders[step_idx](t_k)
+                    prev_latent = interpolate_latent(h_k, self.input_len)
+                prev_forecast = None
+            else:
+                prev_forecast = z_k
+                prev_latent = None
 
         y_final = chain_preds[-1]
         if self.spatial_placement == "final":
             y_final = self._apply_spatial_refine(y_final, history_data)
 
         return y_final, chain_preds, temporal_preds, spatial_preds
+
+    def _forward_direct_matched(
+        self, history_data: torch.Tensor
+    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
+        spatial_codebook = self._spatial_codebook()
+        prev_hidden = None
+        for hidden_step in self.hidden_steps:
+            prev_hidden = hidden_step(
+                history_data,
+                prev_latent=prev_hidden,
+                spatial_codebook=spatial_codebook,
+            )
+
+        y = self.final_temporal_step(
+            history_data,
+            prev_latent=prev_hidden,
+            spatial_codebook=spatial_codebook,
+        )
+        if self.spatial_placement == "interleaved_progressive":
+            history_flow = history_data[..., 0]
+            for module in self.progressive_spatial_modules:
+                y = module.refine_prediction(y, history_flow)
+        elif self.spatial_placement == "final":
+            y = self._apply_spatial_refine(y, history_data)
+
+        return y, [y], [y], [y]
 
     def forward(
         self,
@@ -275,7 +421,11 @@ class ChainForecasting(nn.Module):
         return_all: bool = False,
         **kwargs,
     ):
-        y_final, chain_preds, temporal_preds, spatial_preds = self._forward_chain(history_data)
+        y_final, chain_preds, temporal_preds, spatial_preds = (
+            self._forward_direct_matched(history_data)
+            if self.architecture_mode == "direct_matched"
+            else self._forward_chain(history_data)
+        )
 
         if return_all:
             return {

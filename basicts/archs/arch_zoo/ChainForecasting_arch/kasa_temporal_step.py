@@ -11,6 +11,14 @@ from basicts.archs.arch_zoo.ChainForecasting_arch.downsamp_emb import DownsampEn
 from basicts.archs.arch_zoo.ChainForecasting_arch.patch_emb import PatchEncoder
 
 
+def interpolate_latent(latent: torch.Tensor, target_len: int) -> torch.Tensor:
+    """Resample latent [B, T, N, D] to [B, target_len, N, D]."""
+    batch_size, seq_len, num_nodes, channels = latent.shape
+    x = latent.permute(0, 2, 3, 1).reshape(batch_size * num_nodes, channels, seq_len)
+    x = F.interpolate(x, size=target_len, mode="linear", align_corners=False)
+    return x.reshape(batch_size, num_nodes, channels, target_len).permute(0, 3, 1, 2)
+
+
 def interpolate_forecast(forecast: torch.Tensor, target_len: int) -> torch.Tensor:
     """Linearly resample forecast [B, F, N, C] to [B, target_len, N, C]."""
     batch_size, forecast_len, num_nodes, channels = forecast.shape
@@ -48,6 +56,7 @@ class KASATemporalStep(nn.Module):
         patch_embedding_mode: str = "serial_concat",
         patch_feature_dim=None,
         use_prev_condition: bool = True,
+        latent_cond_dim: int = 0,
     ):
         super().__init__()
         self.output_len = output_len
@@ -58,8 +67,9 @@ class KASATemporalStep(nn.Module):
         self.use_downsample_branch = use_downsample_branch
         self.use_linear_residual_branch = use_linear_residual_branch
         self.use_prev_condition = use_prev_condition
+        self.latent_cond_dim = int(latent_cond_dim)
         self.base_encoder_input_dim = 3
-        self.cond_encoder_input_dim = 4
+        self.cond_encoder_input_dim = 3 + (1 if self.latent_cond_dim <= 0 else self.latent_cond_dim)
 
         self.patch_encoder = PatchEncoder(
             td_size,
@@ -158,8 +168,12 @@ class KASATemporalStep(nn.Module):
         self,
         history_data: torch.Tensor,
         prev_forecast: Optional[torch.Tensor],
+        prev_latent: Optional[torch.Tensor] = None,
     ) -> tuple:
         x_main = history_data[..., :3]
+        if prev_latent is not None and self.latent_cond_dim > 0:
+            step_input = torch.cat([x_main, prev_latent], dim=-1)
+            return step_input, True
         if (
             prev_forecast is not None
             and self.use_prev_condition
@@ -173,9 +187,10 @@ class KASATemporalStep(nn.Module):
         self,
         history_data: torch.Tensor,
         prev_forecast: Optional[torch.Tensor] = None,
+        prev_latent: Optional[torch.Tensor] = None,
         spatial_codebook=None,
     ) -> torch.Tensor:
-        step_input, use_cond = self._build_step_input(history_data, prev_forecast)
+        step_input, use_cond = self._build_step_input(history_data, prev_forecast, prev_latent)
 
         in_len_add = ceil(1.0 * self.input_len / self.stride) * self.stride - self.input_len
         if in_len_add:

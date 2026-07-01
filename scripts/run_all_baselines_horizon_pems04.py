@@ -94,6 +94,36 @@ def baseline_cfg_path(name: str) -> Path | None:
     return p if p.is_file() else None
 
 
+def gts_horizon_override_lines(horizon: int) -> list[str]:
+    """Recompute GTS dim_fc/node_feats for the target horizon data file."""
+    gts_dir = str(BASELINE_DIR / "GTS")
+    return [
+        f'import sys; sys.path.insert(0, {gts_dir!r})',
+        "import torch",
+        "import torch.nn.functional as F",
+        "from basicts.utils.serialization import load_pkl",
+        f'_gts_data = load_pkl("datasets/PEMS04/data_in{INPUT_LEN}_out{horizon}.pkl")',
+        f'_gts_index = load_pkl("datasets/PEMS04/index_in{INPUT_LEN}_out{horizon}.pkl")',
+        "_gts_node_feats_full = _gts_data['processed_data'][..., 0]",
+        "_gts_train_index = _gts_index['train']",
+        "_gts_node_feats = _gts_node_feats_full[:_gts_train_index[-1][-1], ...]",
+        "",
+        "def _infer_gts_dim_fc(feats, num_nodes):",
+        "    conv1 = torch.nn.Conv1d(1, 8, 10, stride=1)",
+        "    conv2 = torch.nn.Conv1d(8, 16, 10, stride=1)",
+        "    if not isinstance(feats, torch.Tensor):",
+        "        feats = torch.tensor(feats, dtype=torch.float32)",
+        "    x = feats.transpose(1, 0).view(num_nodes, 1, -1).float()",
+        "    x = conv1(x); x = F.relu(x); x = conv2(x); x = F.relu(x)",
+        "    return int(x.view(num_nodes, -1).shape[1])",
+        "",
+        f'CFG.MODEL.PARAM["horizon"] = {horizon}',
+        f'CFG.MODEL.PARAM["seq_len"] = {INPUT_LEN}',
+        'CFG.MODEL.PARAM["node_feats"] = _gts_node_feats',
+        'CFG.MODEL.PARAM["dim_fc"] = _infer_gts_dim_fc(_gts_node_feats, 307)',
+    ]
+
+
 def model_override_lines(baseline: str, horizon: int) -> list[str]:
     lines: list[str] = []
     if baseline == "kasa_baseline":
@@ -110,7 +140,7 @@ def model_override_lines(baseline: str, horizon: int) -> list[str]:
             f'CFG.MODEL.PARAM["input_len"] = {INPUT_LEN}',
             f'CFG.MODEL.PARAM["output_len"] = {horizon}',
         ]
-    elif baseline == "GWNet":
+    elif baseline in ("GWNet", "STNorm"):
         lines.append(f'CFG.MODEL.PARAM["out_dim"] = {horizon}')
     elif baseline == "MTGNN":
         lines += [
@@ -131,6 +161,46 @@ def model_override_lines(baseline: str, horizon: int) -> list[str]:
         lines += [
             f'CFG.MODEL.PARAM["in_steps"] = {INPUT_LEN}',
             f'CFG.MODEL.PARAM["out_steps"] = {horizon}',
+        ]
+    elif baseline == "DCRNN":
+        lines += [
+            f'CFG.MODEL.PARAM["horizon"] = {horizon}',
+            f'CFG.MODEL.PARAM["seq_len"] = {INPUT_LEN}',
+        ]
+    elif baseline == "DGCRN":
+        lines += [
+            f'CFG.MODEL.PARAM["seq_length"] = {horizon}',
+            f"CFG.TRAIN.CL.PREDICTION_LENGTH = {horizon}",
+        ]
+    elif baseline == "GTS":
+        lines.extend(gts_horizon_override_lines(horizon))
+    elif baseline == "HimNet":
+        lines.append(f'CFG.MODEL.PARAM["out_steps"] = {horizon}')
+    elif baseline == "LSTNN":
+        lines += [
+            f'CFG.MODEL.PARAM["input_len"] = {INPUT_LEN}',
+            f'CFG.MODEL.PARAM["output_len"] = {horizon}',
+        ]
+    elif baseline == "STDN":
+        lines += [
+            f'CFG.MODEL.PARAM["args"]["Training"]["num_his"] = {INPUT_LEN}',
+            f'CFG.MODEL.PARAM["args"]["Training"]["num_pred"] = {horizon}',
+            f'CFG.MODEL.PARAM["args"]["Training"]["T_miss_len"] = {horizon}',
+        ]
+    elif baseline == "STGCN":
+        lines += [
+            f'CFG.MODEL.PARAM["T"] = {INPUT_LEN}',
+            f'CFG.MODEL.PARAM["blocks"] = [[1], [64, 16, 64], [64, 16, 64], [128, 128], [{horizon}]]',
+        ]
+    elif baseline == "STWave":
+        lines += [
+            f'CFG.MODEL.PARAM["seq_len"] = {INPUT_LEN}',
+            f'CFG.MODEL.PARAM["horizon"] = {horizon}',
+        ]
+    elif baseline == "StemGNN":
+        lines += [
+            f'CFG.MODEL.PARAM["time_step"] = {INPUT_LEN}',
+            f'CFG.MODEL.PARAM["horizon"] = {horizon}',
         ]
     return lines
 
@@ -174,6 +244,9 @@ def generate_temp_config(baseline: str, horizon: int, seed: int) -> Path:
     if base is None:
         raise FileNotFoundError(f"No config for baseline: {baseline}")
     content = strip_hardcoded_cuda_devices(base.read_text(encoding="utf-8"))
+    if baseline == "GTS":
+        gts_dir = str(BASELINE_DIR / "GTS")
+        content = f"import sys\nsys.path.insert(0, {gts_dir!r})\n" + content
     ckpt_rel = f"checkpoints/all_baselines_horizon_pems04/h{horizon}/{baseline}_seed{seed}"
     lines = [
         "",
@@ -195,6 +268,8 @@ def generate_temp_config(baseline: str, horizon: int, seed: int) -> Path:
 
 
 def load_cfg(cfg_path: Path):
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
     spec = importlib.util.spec_from_file_location("baseline_cfg", cfg_path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -336,6 +411,75 @@ def verify_cfg_output_len(cfg_path: Path, horizon: int) -> tuple[bool, str]:
     if cfg.DATASET_OUTPUT_LEN != horizon:
         return False, f"DATASET_OUTPUT_LEN={cfg.DATASET_OUTPUT_LEN}"
     return True, "ok"
+
+
+def verify_model_horizon_params(baseline: str, horizon: int, cfg_path: Path) -> tuple[bool, str]:
+    """Check MODEL.PARAM prediction length matches horizon after overrides."""
+    try:
+        cfg = load_cfg(cfg_path)
+        param = cfg.MODEL.PARAM
+        if baseline == "DCRNN":
+            ok = param.get("horizon") == horizon and param.get("seq_len") == INPUT_LEN
+            msg = f"horizon={param.get('horizon')} seq_len={param.get('seq_len')}"
+        elif baseline == "DGCRN":
+            ok = param.get("seq_length") == horizon
+            msg = f"seq_length={param.get('seq_length')}"
+        elif baseline == "GTS":
+            ok = param.get("horizon") == horizon and param.get("seq_len") == INPUT_LEN
+            msg = f"horizon={param.get('horizon')} seq_len={param.get('seq_len')}"
+        elif baseline == "HimNet":
+            ok = param.get("out_steps") == horizon
+            msg = f"out_steps={param.get('out_steps')}"
+        elif baseline == "LSTNN":
+            ok = param.get("output_len") == horizon and param.get("input_len") == INPUT_LEN
+            msg = f"output_len={param.get('output_len')}"
+        elif baseline == "STDN":
+            tr = param["args"]["Training"]
+            ok = tr.get("num_pred") == horizon and tr.get("num_his") == INPUT_LEN
+            msg = f"num_pred={tr.get('num_pred')} num_his={tr.get('num_his')}"
+        elif baseline == "STGCN":
+            ok = param.get("blocks", [[]])[-1] == [horizon]
+            msg = f"blocks[-1]={param.get('blocks', [[]])[-1]}"
+        elif baseline in ("STNorm", "GWNet"):
+            ok = param.get("out_dim") == horizon
+            msg = f"out_dim={param.get('out_dim')}"
+        elif baseline == "STWave":
+            ok = param.get("horizon") == horizon and param.get("seq_len") == INPUT_LEN
+            msg = f"horizon={param.get('horizon')}"
+        elif baseline == "StemGNN":
+            ok = param.get("horizon") == horizon and param.get("time_step") == INPUT_LEN
+            msg = f"horizon={param.get('horizon')}"
+        else:
+            return True, "n/a"
+        return ok, msg
+    except Exception as exc:
+        return False, str(exc)
+
+
+def verify_forward_shape(cfg_path: Path, horizon: int) -> tuple[bool, str]:
+    """Quick forward pass: output time dim must equal horizon."""
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    try:
+        cfg = load_cfg(cfg_path)
+        if getattr(cfg.MODEL, "SETUP_GRAPH", False) or cfg.TRAIN.get("SETUP_GRAPH", False):
+            return True, "skip (SETUP_GRAPH)"
+        runner_cls = cfg.RUNNER
+        if runner_cls.__name__ not in {"SimpleTimeSeriesForecastingRunner"}:
+            return True, f"skip ({runner_cls.__name__})"
+        model = cfg.MODEL.ARCH(**cfg.MODEL.PARAM).eval()
+        n = cfg.MODEL.PARAM.get("num_nodes") or cfg.MODEL.PARAM.get("node_size") or cfg.MODEL.PARAM.get("n_vertex") or 307
+        in_dim = cfg.MODEL.PARAM.get("input_dim") or cfg.MODEL.PARAM.get("in_dim") or 3
+        ff = cfg.MODEL.get("FORWARD_FEATURES", [0])
+        c = max(len(ff), int(in_dim) if isinstance(in_dim, int) else 3)
+        x = torch.randn(2, INPUT_LEN, n, c)
+        with torch.no_grad():
+            y = model(x)
+        if y.shape[1] != horizon:
+            return False, f"pred shape {tuple(y.shape)} expected T={horizon}"
+        return True, f"pred {tuple(y.shape)}"
+    except Exception as exc:
+        return False, str(exc)
 
 
 def base_row(baseline: str, horizon: int, seed: int, cfg_path: Path) -> dict:
@@ -796,6 +940,10 @@ def main() -> int:
             print(f"  data     : {data_paths(horizon)[0]}")
             print(f"  index    : {data_paths(horizon)[1]}")
             print(f"  cfg_check: {'OK' if cfg_ok else 'FAIL'} ({cfg_msg})")
+            model_ok, model_msg = verify_model_horizon_params(baseline, horizon, cfg_path)
+            print(f"  model_horizon: {'OK' if model_ok else 'FAIL'} ({model_msg})")
+            fwd_ok, fwd_msg = verify_forward_shape(cfg_path, horizon)
+            print(f"  forward: {'OK' if fwd_ok else 'FAIL'} ({fwd_msg})")
             print(f"  batch    : {'OK' if batch_ok else 'FAIL'} ({batch_msg})")
             print(f"  params   : {count_params(cfg_path)}")
             print(f"  cmd      : {cmd}")

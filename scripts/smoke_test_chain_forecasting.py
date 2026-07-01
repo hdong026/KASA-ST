@@ -99,6 +99,7 @@ def main() -> int:
     test_forward("spatial_each_level", {"spatial_placement": "each_level"})
     test_forward("spatial_none", {"spatial_placement": "none"})
     test_interleaved_progressive()
+    test_ablation_variants()
     test_pool_target()
     print("All smoke tests passed.")
     return 0
@@ -139,6 +140,81 @@ def test_interleaved_progressive() -> None:
         assert "temporal_preds" in o and "spatial_preds" in o
 
     print("[ok] interleaved_progressive: shapes and pred==S_all")
+
+
+def test_ablation_variants() -> None:
+    adj = os.path.join(ROOT, "datasets", "PEMS04", "adj_mx.pkl")
+    history = torch.randn(2, 12, 307, 4)
+
+    # direct_prediction: single-stage, final spatial only
+    direct = ChainForecasting(
+        **base_model_args(
+            chain_lengths=[12],
+            chain_loss_weights=[1.0],
+            spatial_placement="final",
+            adj_mx_path=adj,
+        )
+    )
+    out_d = direct(history, return_all=True)
+    assert out_d["pred"].shape == (2, 12, 307, 1)
+    assert len(out_d["chain_preds"]) == 1
+    print("[ok] direct_prediction: single chain stage + final spatial")
+
+    ist_base = base_model_args(
+        spatial_placement="interleaved_progressive",
+        progressive_spatial_ratios=[0.25, 0.5, 1.0],
+        progressive_spatial_alphas=[0.03, 0.06, 0.10],
+        progressive_spatial_topks=[8, 16, 32],
+        adj_mx_path=adj,
+    )
+
+    # fsc_no_intermediate_supervision: same arch, loss weights only (checked in runner)
+    no_mid = ChainForecasting(**{**ist_base, "chain_loss_weights": [0.0, 0.0, 1.0]})
+    out_n = no_mid(history, return_all=True)
+    assert len(out_n["chain_preds"]) == 3
+    print("[ok] fsc_no_intermediate_supervision: 3-stage chain forward")
+
+    # direct_prediction_matched: hidden stages + single final head, no intermediate forecasts
+    matched = ChainForecasting(
+        **{
+            **ist_base,
+            "architecture_mode": "direct_matched",
+            "chain_lengths": [12],
+            "chain_loss_weights": [1.0],
+            "matched_stage_lengths": [3, 6, 12],
+            "matched_num_layer": 2,
+            "matched_hidden_dim": 32,
+        }
+    )
+    out_m = matched(history, return_all=True)
+    assert out_m["pred"].shape == (2, 12, 307, 1)
+    assert len(out_m["chain_preds"]) == 1
+    n_matched = sum(p.numel() for p in matched.parameters())
+    n_base = sum(p.numel() for p in ChainForecasting(**ist_base).parameters())
+    ratio = n_matched / n_base
+    assert 0.95 <= ratio <= 1.05, f"param ratio {ratio:.4f} outside ±5%"
+    print(f"[ok] direct_prediction_matched: params={n_matched} base={n_base} ratio={ratio:.4f}")
+
+    # latent_propagation (legacy v1; not part of active ablation suite)
+    latent = ChainForecasting(
+        **{
+            **ist_base,
+            "propagation_mode": "latent",
+            "latent_prop_dim": 32,
+        }
+    )
+    out_l = latent(history, return_all=True)
+    assert len(out_l["chain_preds"]) == 3
+    n_latent = sum(p.numel() for p in latent.parameters())
+    n_base = sum(p.numel() for p in ChainForecasting(**ist_base).parameters())
+    print(f"[ok] latent_propagation: params latent={n_latent} base={n_base}")
+
+    # final_only_spatial
+    final_sp = ChainForecasting(**{**ist_base, "spatial_placement": "final"})
+    out_f = final_sp(history, return_all=True)
+    assert out_f["pred"].shape == (2, 12, 307, 1)
+    assert len(out_f["chain_preds"]) == 3
+    print("[ok] final_only_spatial: chain + final spatial only")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import os
 import sys
 from argparse import ArgumentParser
+from typing import Optional
 
 # TODO: remove it when basicts can be installed by pip
 root_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -58,17 +59,29 @@ def parse_args():
     return parser.parse_args()
 
 
+def resolve_cuda_devices(gpus: Optional[str]) -> Optional[str]:
+    """Apply CUDA mask before importing torch; return value for easytorch."""
+    if gpus is None:
+        return None
+    gpus = str(gpus)
+    preset = os.environ.get("CUDA_VISIBLE_DEVICES")
+    # Parent launchers (horizon/ablation scripts) often pin the physical GPU in the
+    # subprocess env and pass --gpus 0 to select logical cuda:0. Do not overwrite.
+    if preset and gpus == "0":
+        return preset
+    os.environ["CUDA_VISIBLE_DEVICES"] = gpus
+    return gpus
+
+
 def main():
     args = parse_args()
-    # Must set before importing torch, otherwise CUDA binds to physical GPU 0.
-    if args.gpus is not None:
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpus)
+    devices = resolve_cuda_devices(args.gpus)
 
     import torch
     from basicts import launch_training
 
     torch.set_num_threads(1)  # aviod high cpu avg usage
-    launch_training(args.cfg, args.gpus)
+    launch_training(args.cfg, devices)
 
 
 if __name__ == "__main__":
