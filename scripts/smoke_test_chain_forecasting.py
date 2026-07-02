@@ -216,6 +216,53 @@ def test_ablation_variants() -> None:
     assert len(out_f["chain_preds"]) == 3
     print("[ok] final_only_spatial: chain + final spatial only")
 
+    # MTSR Experiment A variants
+    mtsr_base = {**ist_base, "chain_supervision_source": "temporal_chain"}
+    temporal_only = ChainForecasting(**{**mtsr_base, "spatial_placement": "none"})
+    out_to = temporal_only(history, return_all=True)
+    assert out_to["pred"].shape == (2, 12, 307, 1)
+    assert torch.equal(out_to["pred"], out_to["temporal_preds"][-1])
+    for i in range(3):
+        assert torch.equal(out_to["chain_preds"][i], out_to["temporal_preds"][i])
+    print("[ok] mtsr_temporal_only: T chain only, no spatial")
+
+    tf_final = ChainForecasting(**{**mtsr_base, "spatial_placement": "final"})
+    out_tff = tf_final(history, return_all=True)
+    assert out_tff["pred"].shape == (2, 12, 307, 1)
+    assert len(out_tff["spatial_stage_preds"]) == 0
+    print("[ok] mtsr_temporal_first_final_spatial: T chain + final S")
+
+    tf_ms = ChainForecasting(
+        **{
+            **mtsr_base,
+            "spatial_placement": "temporal_first_multiscale",
+            "post_chain_spatial_ratios": [0.25, 0.5, 1.0],
+            "post_chain_spatial_topks": [8, 16, 32],
+            "post_chain_spatial_alphas": [0.03, 0.06, 0.10],
+        }
+    )
+    out_tfms = tf_ms(history, return_all=True)
+    assert out_tfms["pred"].shape == (2, 12, 307, 1)
+    assert len(out_tfms["spatial_stage_preds"]) == 3
+    print("[ok] mtsr_temporal_first_node_preserving_multiscale_spatial: T chain + 3 post-chain S")
+
+    tf_gr = ChainForecasting(
+        **{
+            **mtsr_base,
+            "spatial_placement": "temporal_first_graph_resolution",
+            "graph_resolution_ratios": [0.25, 0.50, 1.00],
+            "graph_resolution_alphas": [0.03, 0.06, 0.10],
+            "graph_resolution_topks": [8, 16, 32],
+            "dataset_name": "PEMS04",
+            "clustering_seed": 0,
+        }
+    )
+    out_tfgr = tf_gr(history, return_all=True)
+    assert out_tfgr["pred"].shape == (2, 12, 307, 1)
+    assert "graph_resolution_diagnostics" in out_tfgr
+    assert len(out_tfgr["graph_resolution_diagnostics"]["node_stage_preds"]) == 3
+    print("[ok] mtsr_temporal_first_graph_resolution_spatial: T chain + graph-resolution S")
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

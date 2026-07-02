@@ -17,6 +17,12 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         self.chain_loss_weights = list(param.get("chain_loss_weights", [0.2, 0.3, 1.0]))
         if len(self.chain_lengths) != len(self.chain_loss_weights):
             raise ValueError("chain_lengths and chain_loss_weights must have the same length.")
+        self.spatial_stage_loss_weights = list(
+            param.get("spatial_stage_loss_weights", [0.0, 0.0, 1.0])
+        )
+        self.spatial_graph_loss_weights = list(
+            param.get("spatial_graph_loss_weights", [0.0, 0.0, 0.0])
+        )
 
     def forward(
         self,
@@ -62,6 +68,13 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         real_value = self.select_target_features(future_data)
         return prediction, real_value
 
+    def _weighted_loss(self, pred: torch.Tensor, target: torch.Tensor, weight: float) -> torch.Tensor:
+        if float(weight) == 0.0:
+            return torch.tensor(0.0, device=target.device)
+        pred_rescaled = SCALER_REGISTRY.get(self.scaler["func"])(pred, **self.scaler["args"])
+        target_rescaled = SCALER_REGISTRY.get(self.scaler["func"])(target, **self.scaler["args"])
+        return float(weight) * self.metric_forward(self.loss, [pred_rescaled, target_rescaled])
+
     def train_iters(
         self,
         epoch: int,
@@ -78,26 +91,42 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         out = self._last_chain_out
         preds = out["chain_preds"]
         targets = [ChainForecasting.pool_target(real_value, k) for k in self.chain_lengths]
+        final_target = targets[-1]
 
         loss = torch.tensor(0.0, device=real_value.device)
         if len(self.chain_loss_weights) > 1:
             for weight, pred, target in zip(
                 self.chain_loss_weights[:-1], preds[:-1], targets[:-1]
             ):
-                pred_rescaled = SCALER_REGISTRY.get(self.scaler["func"])(pred, **self.scaler["args"])
-                target_rescaled = SCALER_REGISTRY.get(self.scaler["func"])(target, **self.scaler["args"])
-                loss = loss + float(weight) * self.metric_forward(
-                    self.loss, [pred_rescaled, target_rescaled]
-                )
+                loss = loss + self._weighted_loss(pred, target, weight)
 
-        final_weight = float(self.chain_loss_weights[-1])
+        loss = loss + self._weighted_loss(out["pred"], final_target, self.chain_loss_weights[-1])
+
+        spatial_stage_preds = out.get("spatial_stage_preds") or []
         final_pred = out["pred"]
-        final_target = targets[-1]
-        final_pred_rescaled = SCALER_REGISTRY.get(self.scaler["func"])(final_pred, **self.scaler["args"])
-        final_target_rescaled = SCALER_REGISTRY.get(self.scaler["func"])(final_target, **self.scaler["args"])
-        loss = loss + final_weight * self.metric_forward(
-            self.loss, [final_pred_rescaled, final_target_rescaled]
-        )
+        if spatial_stage_preds and any(float(w) != 0.0 for w in self.spatial_stage_loss_weights):
+            weights = list(self.spatial_stage_loss_weights)
+            if len(weights) < len(spatial_stage_preds):
+                weights = weights + [weights[-1]] * (len(spatial_stage_preds) - len(weights))
+            weights = weights[: len(spatial_stage_preds)]
+            for pred, weight in zip(spatial_stage_preds, weights):
+                if pred is final_pred:
+                    continue
+                loss = loss + self._weighted_loss(pred, final_target, weight)
+
+        graph_stage_preds = []
+        graph_diag = out.get("graph_resolution_diagnostics") or {}
+        if graph_diag:
+            graph_stage_preds = graph_diag.get("node_stage_preds") or []
+        if graph_stage_preds and any(float(w) != 0.0 for w in self.spatial_graph_loss_weights):
+            g_weights = list(self.spatial_graph_loss_weights)
+            if len(g_weights) < len(graph_stage_preds):
+                g_weights = g_weights + [g_weights[-1]] * (len(graph_stage_preds) - len(g_weights))
+            g_weights = g_weights[: len(graph_stage_preds)]
+            for pred, weight in zip(graph_stage_preds, g_weights):
+                if pred is final_pred:
+                    continue
+                loss = loss + self._weighted_loss(pred, final_target, weight)
 
         pred_final_rescaled = SCALER_REGISTRY.get(self.scaler["func"])(
             forward_return[0], **self.scaler["args"]

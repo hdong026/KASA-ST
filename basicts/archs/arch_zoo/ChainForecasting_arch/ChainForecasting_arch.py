@@ -65,6 +65,29 @@ class ChainForecasting(nn.Module):
             )
         self.latent_prop_dim = int(model_args.get("latent_prop_dim", self.d_d))
         self.spatial_placement = self._resolve_spatial_placement(model_args)
+        self.spatial_organization_type = self._resolve_spatial_organization_type(
+            self.spatial_placement
+        )
+        self.chain_supervision_source = str(
+            model_args.get("chain_supervision_source", "spatial_chain")
+        ).lower()
+        if self.chain_supervision_source not in {"spatial_chain", "temporal_chain"}:
+            raise ValueError(
+                f"Unsupported chain_supervision_source: {self.chain_supervision_source}. "
+                "Expected 'spatial_chain' or 'temporal_chain'."
+            )
+        self.spatial_stage_loss_weights = list(
+            model_args.get("spatial_stage_loss_weights", [0.0, 0.0, 1.0])
+        )
+        self.spatial_graph_loss_weights = list(
+            model_args.get("spatial_graph_loss_weights", [0.0, 0.0, 0.0])
+        )
+        self.graph_resolution_ratios = list(
+            model_args.get("graph_resolution_ratios", [0.25, 0.50, 1.00])
+        )
+        self.dataset_name = str(model_args.get("dataset_name", "PEMS04"))
+        self.clustering_seed = int(model_args.get("clustering_seed", 0))
+        self._last_graph_diagnostics = None
         self.post_spatial_mode = model_args.get("post_spatial_mode", "adaptive_only")
         self.use_pre_temporal_spatial_enhancement = model_args.get(
             "use_pre_temporal_spatial_enhancement", False
@@ -221,53 +244,105 @@ class ChainForecasting(nn.Module):
         )
 
         self.progressive_spatial_modules = nn.ModuleList()
+        self.post_chain_spatial_modules = nn.ModuleList()
+        self.graph_resolution_stack = None
+
         spatial_stage_count = (
             len(self.matched_stage_lengths)
             if self.architecture_mode == "direct_matched"
             else len(self.chain_lengths)
         )
         if self.spatial_placement == "interleaved_progressive":
-            ratios = self._fit_stage_list(
-                model_args.get("progressive_spatial_ratios", [0.25, 0.5, 1.0]),
+            self.progressive_spatial_modules = self._build_progressive_spatial_modules(
+                model_args,
                 spatial_stage_count,
             )
-            alphas = self._fit_stage_list(
-                model_args.get("progressive_spatial_alphas", [0.03, 0.06, 0.10]),
-                spatial_stage_count,
+        elif self.spatial_placement == "temporal_first_multiscale":
+            post_stage_count = len(
+                model_args.get("post_chain_spatial_ratios", [0.25, 0.5, 1.0])
             )
-            topks = self._fit_stage_list(
-                model_args.get("progressive_spatial_topks", [8, 16, 32]),
-                spatial_stage_count,
+            self.post_chain_spatial_modules = self._build_progressive_spatial_modules(
+                model_args,
+                post_stage_count,
+                ratio_key="post_chain_spatial_ratios",
+                alpha_key="post_chain_spatial_alphas",
+                topk_key="post_chain_spatial_topks",
             )
-            for ratio, alpha, topk in zip(ratios, alphas, topks):
-                self.progressive_spatial_modules.append(
-                    ABCDSpatialModule(
-                        node_size=self.node_size,
-                        input_len=self.input_len,
-                        d_spa=self.d_spa,
-                        if_spatial=self.if_spatial,
-                        spatial_scheme=self.spatial_scheme,
-                        adj_mx_path=model_args.get("adj_mx_path"),
-                        use_gcn=model_args.get("use_gcn", False),
-                        gcn_hidden_dim=model_args.get("gcn_hidden_dim", 64),
-                        use_dynamic_spatial=model_args.get("use_dynamic_spatial", False),
-                        dyn_hidden_dim=max(8, int(model_args.get("dyn_hidden_dim", 64) * ratio)),
-                        dyn_topk=topk,
-                        dyn_tau=model_args.get("dyn_tau", 0.5),
-                        dyn_alpha=alpha,
-                        dyn_static_weight=model_args.get("dyn_static_weight", 0.2),
-                        use_adaptive_adj=model_args.get("use_adaptive_adj", True),
-                        adp_hidden_dim=max(8, int(model_args.get("adp_hidden_dim", 32) * ratio)),
-                        adp_topk=topk,
-                        adp_tau=model_args.get("adp_tau", 0.5),
-                        adp_alpha=alpha,
-                        use_hybrid_graph=model_args.get("use_hybrid_graph", False),
-                        hybrid_alpha=alpha,
-                        use_lightweight_spatial=model_args.get("use_lightweight_spatial", False),
-                        light_alpha=alpha,
-                        post_spatial_mode=self.post_spatial_mode,
-                    )
+        elif self.spatial_placement == "temporal_first_graph_resolution":
+            from basicts.archs.arch_zoo.ChainForecasting_arch.graph_resolution_spatial import (
+                GraphResolutionSpatialStack,
+            )
+
+            self.graph_resolution_stack = GraphResolutionSpatialStack(
+                node_size=self.node_size,
+                input_len=self.input_len,
+                d_spa=self.d_spa,
+                if_spatial=self.if_spatial,
+                spatial_scheme=self.spatial_scheme,
+                adj_mx_path=model_args.get("adj_mx_path"),
+                post_spatial_mode=self.post_spatial_mode,
+                graph_resolution_ratios=self.graph_resolution_ratios,
+                graph_resolution_alphas=model_args.get(
+                    "graph_resolution_alphas", [0.03, 0.06, 0.10]
+                ),
+                graph_resolution_topks=model_args.get(
+                    "graph_resolution_topks", [8, 16, 32]
+                ),
+                graph_resolution_betas=model_args.get(
+                    "graph_resolution_betas", [1.0, 1.0, 1.0]
+                ),
+                graph_resolution_rhos=model_args.get(
+                    "graph_resolution_rhos", self.graph_resolution_ratios
+                ),
+                adp_hidden_dim=model_args.get("adp_hidden_dim", 32),
+                adp_tau=model_args.get("adp_tau", 0.5),
+                clustering_seed=self.clustering_seed,
+                dataset_name=self.dataset_name,
+                cluster_cache_dir=model_args.get("graph_cluster_cache_dir"),
+            )
+
+    def _build_progressive_spatial_modules(
+        self,
+        model_args: dict,
+        num_stages: int,
+        ratio_key: str = "progressive_spatial_ratios",
+        alpha_key: str = "progressive_spatial_alphas",
+        topk_key: str = "progressive_spatial_topks",
+    ) -> nn.ModuleList:
+        ratios = self._fit_stage_list(model_args.get(ratio_key, [0.25, 0.5, 1.0]), num_stages)
+        alphas = self._fit_stage_list(model_args.get(alpha_key, [0.03, 0.06, 0.10]), num_stages)
+        topks = self._fit_stage_list(model_args.get(topk_key, [8, 16, 32]), num_stages)
+        modules = nn.ModuleList()
+        for ratio, alpha, topk in zip(ratios, alphas, topks):
+            modules.append(
+                ABCDSpatialModule(
+                    node_size=self.node_size,
+                    input_len=self.input_len,
+                    d_spa=self.d_spa,
+                    if_spatial=self.if_spatial,
+                    spatial_scheme=self.spatial_scheme,
+                    adj_mx_path=model_args.get("adj_mx_path"),
+                    use_gcn=model_args.get("use_gcn", False),
+                    gcn_hidden_dim=model_args.get("gcn_hidden_dim", 64),
+                    use_dynamic_spatial=model_args.get("use_dynamic_spatial", False),
+                    dyn_hidden_dim=max(8, int(model_args.get("dyn_hidden_dim", 64) * ratio)),
+                    dyn_topk=topk,
+                    dyn_tau=model_args.get("dyn_tau", 0.5),
+                    dyn_alpha=alpha,
+                    dyn_static_weight=model_args.get("dyn_static_weight", 0.2),
+                    use_adaptive_adj=model_args.get("use_adaptive_adj", True),
+                    adp_hidden_dim=max(8, int(model_args.get("adp_hidden_dim", 32) * ratio)),
+                    adp_topk=topk,
+                    adp_tau=model_args.get("adp_tau", 0.5),
+                    adp_alpha=alpha,
+                    use_hybrid_graph=model_args.get("use_hybrid_graph", False),
+                    hybrid_alpha=alpha,
+                    use_lightweight_spatial=model_args.get("use_lightweight_spatial", False),
+                    light_alpha=alpha,
+                    post_spatial_mode=self.post_spatial_mode,
                 )
+            )
+        return modules
 
     @staticmethod
     def _fit_stage_list(values: list, num_stages: int) -> list:
@@ -288,12 +363,43 @@ class ChainForecasting(nn.Module):
             placement = "final"
         else:
             placement = "none"
-        if placement not in {"final", "each_level", "none", "interleaved_progressive"}:
+        if placement not in {
+            "final",
+            "each_level",
+            "none",
+            "interleaved_progressive",
+            "temporal_first_multiscale",
+            "temporal_first_graph_resolution",
+        }:
             raise ValueError(
                 f"Unsupported spatial_placement: {placement}. "
-                "Expected 'final', 'each_level', 'none', or 'interleaved_progressive'."
+                "Expected 'final', 'each_level', 'none', 'interleaved_progressive', "
+                "'temporal_first_multiscale', or 'temporal_first_graph_resolution'."
             )
         return placement
+
+    @staticmethod
+    def _resolve_spatial_organization_type(spatial_placement: str) -> str:
+        mapping = {
+            "none": "none",
+            "interleaved_progressive": "interleaved",
+            "final": "final_only",
+            "each_level": "each_level",
+            "temporal_first_multiscale": "temporal_first_multiscale",
+            "temporal_first_graph_resolution": "graph_resolution",
+        }
+        return mapping.get(spatial_placement, spatial_placement)
+
+    def _uses_interleaved_spatial(self) -> bool:
+        return self.spatial_placement in {"interleaved_progressive", "each_level"}
+
+    def _propagate_temporal_only(self) -> bool:
+        return self.spatial_placement in {
+            "none",
+            "final",
+            "temporal_first_multiscale",
+            "temporal_first_graph_resolution",
+        }
 
     @staticmethod
     def pool_target(future_target: torch.Tensor, target_len: int) -> torch.Tensor:
@@ -326,13 +432,28 @@ class ChainForecasting(nn.Module):
         module = self.progressive_spatial_modules[stage_idx]
         return module.refine_prediction(forecast, history_flow)
 
+    def _apply_post_chain_spatial_stages(
+        self,
+        forecast: torch.Tensor,
+        history_data: torch.Tensor,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        history_flow = history_data[..., 0]
+        stage_outputs: list[torch.Tensor] = []
+        current = forecast
+        for module in self.post_chain_spatial_modules:
+            current = module.refine_prediction(current, history_flow)
+            stage_outputs.append(current)
+        return current, stage_outputs
+
     def _forward_chain(
         self, history_data: torch.Tensor
-    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
+        self._last_graph_diagnostics = None
         spatial_codebook = self._spatial_codebook()
         chain_preds: list[torch.Tensor] = []
         temporal_preds: list[torch.Tensor] = []
         spatial_preds: list[torch.Tensor] = []
+        spatial_stage_preds: list[torch.Tensor] = []
         prev_forecast = None
         prev_latent = None
 
@@ -368,26 +489,51 @@ class ChainForecasting(nn.Module):
 
             temporal_preds.append(t_k)
             spatial_preds.append(z_k)
-            chain_preds.append(z_k)
+
+            if self.chain_supervision_source == "temporal_chain":
+                chain_preds.append(t_k)
+            else:
+                chain_preds.append(z_k)
 
             if self.propagation_mode == "latent":
                 if step_idx < len(self.latent_encoders):
                     h_k = self.latent_encoders[step_idx](t_k)
                     prev_latent = interpolate_latent(h_k, self.input_len)
                 prev_forecast = None
+            elif self._propagate_temporal_only():
+                prev_forecast = t_k
+                prev_latent = None
             else:
                 prev_forecast = z_k
                 prev_latent = None
 
+        y_temporal_final = temporal_preds[-1]
         y_final = chain_preds[-1]
-        if self.spatial_placement == "final":
-            y_final = self._apply_spatial_refine(y_final, history_data)
 
-        return y_final, chain_preds, temporal_preds, spatial_preds
+        if self.spatial_placement == "final":
+            y_final = self._apply_spatial_refine(y_temporal_final, history_data)
+            spatial_stage_preds = []
+        elif self.spatial_placement == "temporal_first_multiscale":
+            y_final, spatial_stage_preds = self._apply_post_chain_spatial_stages(
+                y_temporal_final, history_data
+            )
+        elif self.spatial_placement == "temporal_first_graph_resolution":
+            history_flow = history_data[..., 0]
+            graph_out = self.graph_resolution_stack(
+                y_temporal_final, history_flow, return_diagnostics=True
+            )
+            y_final = graph_out["pred"]
+            spatial_stage_preds = graph_out["node_stage_preds"]
+            self._last_graph_diagnostics = graph_out
+
+        if self.chain_supervision_source == "temporal_chain":
+            chain_preds[-1] = y_temporal_final
+
+        return y_final, chain_preds, temporal_preds, spatial_preds, spatial_stage_preds
 
     def _forward_direct_matched(
         self, history_data: torch.Tensor
-    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
         spatial_codebook = self._spatial_codebook()
         prev_hidden = None
         for hidden_step in self.hidden_steps:
@@ -402,14 +548,19 @@ class ChainForecasting(nn.Module):
             prev_latent=prev_hidden,
             spatial_codebook=spatial_codebook,
         )
+        spatial_stage_preds: list[torch.Tensor] = [y]
         if self.spatial_placement == "interleaved_progressive":
             history_flow = history_data[..., 0]
             for module in self.progressive_spatial_modules:
                 y = module.refine_prediction(y, history_flow)
+                spatial_stage_preds.append(y)
         elif self.spatial_placement == "final":
             y = self._apply_spatial_refine(y, history_data)
+            spatial_stage_preds.append(y)
+        elif self.spatial_placement == "temporal_first_multiscale":
+            y, spatial_stage_preds = self._apply_post_chain_spatial_stages(y, history_data)
 
-        return y, [y], [y], [y]
+        return y, [y], [y], [y], spatial_stage_preds
 
     def forward(
         self,
@@ -421,17 +572,25 @@ class ChainForecasting(nn.Module):
         return_all: bool = False,
         **kwargs,
     ):
-        y_final, chain_preds, temporal_preds, spatial_preds = (
+        y_final, chain_preds, temporal_preds, spatial_preds, spatial_stage_preds = (
             self._forward_direct_matched(history_data)
             if self.architecture_mode == "direct_matched"
             else self._forward_chain(history_data)
         )
 
         if return_all:
-            return {
+            result = {
                 "pred": y_final,
                 "chain_preds": chain_preds,
                 "temporal_preds": temporal_preds,
                 "spatial_preds": spatial_preds,
+                "spatial_stage_preds": spatial_stage_preds,
+                "final_temporal_pred": temporal_preds[-1] if temporal_preds else y_final,
+                "spatial_organization_type": self.spatial_organization_type,
             }
+            if self._last_graph_diagnostics is not None:
+                result["graph_resolution_diagnostics"] = self._last_graph_diagnostics
+                if self.graph_resolution_stack is not None:
+                    result["graph_resolution_metadata"] = self.graph_resolution_stack.metadata()
+            return result
         return y_final
