@@ -1,0 +1,142 @@
+2026-07-09 13:22:04,142 - easytorch-launcher - INFO - Launching EasyTorch training.
+2026-07-09 13:22:05,231 - easytorch-env - INFO - Use devices 0.
+2026-07-09 13:22:05,256 - easytorch-launcher - INFO - Initializing runner "<class 'basicts.runners.runner_zoo.chain_forecasting_runner.ChainForecastingRunner'>"
+2026-07-09 13:22:05,257 - easytorch-env - INFO - Disable TF32 mode
+2026-07-09 13:22:05,258 - easytorch - INFO - Set ckpt save dir: 'checkpoints/graph_resolution_pems04/G4_final_adaptive_ms_uniform/seed1/7571d0642367c4f89e688efb565e03d9'
+2026-07-09 13:22:05,258 - easytorch - INFO - Building model.
+2026-07-09 13:22:05,507 - easytorch-training - INFO - Initializing training.
+2026-07-09 13:22:05,507 - easytorch-training - INFO - Building training data loader.
+2026-07-09 13:22:05,639 - easytorch-training - INFO - Set optim: Adam (
+Parameter Group 0
+    amsgrad: False
+    betas: (0.9, 0.999)
+    capturable: False
+    decoupled_weight_decay: False
+    differentiable: False
+    eps: 1e-08
+    foreach: None
+    fused: None
+    lr: 0.002
+    maximize: False
+    weight_decay: 0.0001
+)
+2026-07-09 13:22:05,639 - easytorch-training - INFO - Set lr_scheduler: <torch.optim.lr_scheduler.MultiStepLR object at 0x76a640d51340>
+2026-07-09 13:22:05,639 - easytorch-training - INFO - Loading Checkpoint from 'checkpoints/graph_resolution_pems04/G4_final_adaptive_ms_uniform/seed1/7571d0642367c4f89e688efb565e03d9/ChainForecasting_100.pt'
+2026-07-09 13:22:05,814 - easytorch-training - INFO - Resume training
+2026-07-09 13:22:05,816 - easytorch-training - INFO - Initializing validation.
+2026-07-09 13:22:05,816 - easytorch-training - INFO - Building val data loader.
+2026-07-09 13:22:06,160 - easytorch-training - INFO - The training finished at 2026-07-09 13:22:06
+DESCRIPTION: Graph Resolution ablation: G4_final_adaptive_ms_uniform seed1
+RUNNER: <class 'basicts.runners.runner_zoo.chain_forecasting_runner.ChainForecastingRunner'>
+DATASET_CLS: <class 'basicts.data.dataset.TimeSeriesForecastingDataset'>
+DATASET_NAME: PEMS04
+DATASET_TYPE: Traffic flow
+DATASET_INPUT_LEN: 12
+DATASET_OUTPUT_LEN: 12
+GPU_NUM: 1
+ENV:
+  SEED: 1
+  CUDNN:
+    ENABLED: True
+MODEL:
+  NAME: ChainForecasting
+  ARCH: <class 'basicts.archs.arch_zoo.ChainForecasting_arch.ChainForecasting_arch.ChainForecasting'>
+  PARAM:
+    node_size: 307
+    input_len: 12
+    output_len: 12
+    input_dim: 4
+    main_input_dim: 3
+    patch_len: 3
+    stride: 4
+    td_size: 288
+    dw_size: 7
+    d_td: 32
+    d_dw: 32
+    d_d: 32
+    d_spa: 32
+    if_time_in_day: True
+    if_day_in_week: True
+    if_spatial: True
+    num_layer: 2
+    spatial_scheme: C
+    adj_mx_path: datasets/PEMS04/adj_mx.pkl
+    use_gcn: True
+    gcn_hidden_dim: 64
+    use_dynamic_spatial: True
+    dyn_hidden_dim: 64
+    dyn_topk: 20
+    dyn_tau: 0.5
+    dyn_static_weight: 0.2
+    use_adaptive_adj: True
+    adp_hidden_dim: 32
+    adp_topk: 20
+    adp_tau: 0.5
+    use_hybrid_graph: True
+    hybrid_alpha: 0.2
+    use_patch_branch: True
+    use_downsample_branch: True
+    use_linear_residual_branch: True
+    patch_embedding_mode: serial_concat
+    patch_data_input_mode: all
+    post_spatial_mode: adaptive_multiscale_only
+    spatial_placement: final
+    use_pre_temporal_spatial_enhancement: False
+    keep_output_prior_residual: False
+    use_input_prior_enhancement: False
+    use_graph_spectral_calibration: False
+    use_extra_prior_input: False
+    use_prev_condition: True
+    chain_lengths: [3, 6, 12]
+    chain_loss_weights: [0.2, 0.3, 1.0]
+    adaptive_ms_topks: [8, 16, 32]
+    adaptive_ms_alpha: 0.1
+    adaptive_ms_fusion: softmax
+    adaptive_ms_share_logits: True
+    adaptive_ms_init: uniform
+  FORWARD_FEATURES: [0, 1, 2, 3]
+  TARGET_FEATURES: [0]
+TRAIN:
+  LOSS: masked_mae
+  OPTIM:
+    TYPE: Adam
+    PARAM:
+      lr: 0.002
+      weight_decay: 0.0001
+  LR_SCHEDULER:
+    TYPE: MultiStepLR
+    PARAM:
+      milestones: [1, 35, 60, 80, 95]
+      gamma: 0.5
+  NUM_EPOCHS: 100
+  CKPT_SAVE_DIR: checkpoints/graph_resolution_pems04/G4_final_adaptive_ms_uniform/seed1
+  DATA:
+    DIR: datasets/PEMS04
+    BATCH_SIZE: 32
+    PREFETCH: False
+    SHUFFLE: True
+    NUM_WORKERS: 2
+    PIN_MEMORY: False
+  NULL_VAL: 0.0
+VAL:
+  INTERVAL: 1
+  DATA:
+    DIR: datasets/PEMS04
+    BATCH_SIZE: 32
+    PREFETCH: False
+    SHUFFLE: False
+    NUM_WORKERS: 2
+    PIN_MEMORY: False
+TEST:
+  INTERVAL: 1
+  DATA:
+    DIR: datasets/PEMS04
+    BATCH_SIZE: 32
+    PREFETCH: False
+    SHUFFLE: False
+    NUM_WORKERS: 2
+    PIN_MEMORY: False
+
+train len: 10181
+val len: 3394
+test len: 3394

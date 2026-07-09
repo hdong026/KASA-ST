@@ -221,26 +221,7 @@ class ChainForecasting(nn.Module):
             input_len=self.input_len,
             d_spa=self.d_spa,
             if_spatial=self.if_spatial,
-            spatial_scheme=self.spatial_scheme,
-            adj_mx_path=model_args.get("adj_mx_path"),
-            use_gcn=model_args.get("use_gcn", False),
-            gcn_hidden_dim=model_args.get("gcn_hidden_dim", 64),
-            use_dynamic_spatial=model_args.get("use_dynamic_spatial", False),
-            dyn_hidden_dim=model_args.get("dyn_hidden_dim", 64),
-            dyn_topk=model_args.get("dyn_topk", 20),
-            dyn_tau=model_args.get("dyn_tau", 0.5),
-            dyn_alpha=model_args.get("dyn_alpha", 0.15),
-            dyn_static_weight=model_args.get("dyn_static_weight", 0.2),
-            use_adaptive_adj=model_args.get("use_adaptive_adj", True),
-            adp_hidden_dim=model_args.get("adp_hidden_dim", 32),
-            adp_topk=model_args.get("adp_topk", 20),
-            adp_tau=model_args.get("adp_tau", 0.5),
-            adp_alpha=model_args.get("adp_alpha", 0.1),
-            use_hybrid_graph=model_args.get("use_hybrid_graph", False),
-            hybrid_alpha=model_args.get("hybrid_alpha", 0.2),
-            use_lightweight_spatial=model_args.get("use_lightweight_spatial", False),
-            light_alpha=model_args.get("light_alpha", 0.05),
-            post_spatial_mode=self.post_spatial_mode,
+            **self._abcd_spatial_kwargs(model_args),
         )
 
         self.progressive_spatial_modules = nn.ModuleList()
@@ -299,7 +280,44 @@ class ChainForecasting(nn.Module):
                 clustering_seed=self.clustering_seed,
                 dataset_name=self.dataset_name,
                 cluster_cache_dir=model_args.get("graph_cluster_cache_dir"),
+                adaptive_ms_topks=model_args.get("adaptive_ms_topks", [8, 16, 32]),
+                adaptive_ms_alpha=model_args.get("adaptive_ms_alpha", 0.10),
+                adaptive_ms_fusion=model_args.get("adaptive_ms_fusion", "softmax"),
+                adaptive_ms_share_logits=model_args.get("adaptive_ms_share_logits", True),
+                adaptive_ms_init=model_args.get("adaptive_ms_init", "favor_largest"),
             )
+
+    @staticmethod
+    def _abcd_spatial_kwargs(model_args: dict, **overrides) -> dict:
+        kwargs = {
+            "spatial_scheme": model_args.get("spatial_scheme", "C"),
+            "adj_mx_path": model_args.get("adj_mx_path"),
+            "use_gcn": model_args.get("use_gcn", False),
+            "gcn_hidden_dim": model_args.get("gcn_hidden_dim", 64),
+            "use_dynamic_spatial": model_args.get("use_dynamic_spatial", False),
+            "dyn_hidden_dim": model_args.get("dyn_hidden_dim", 64),
+            "dyn_topk": model_args.get("dyn_topk", 20),
+            "dyn_tau": model_args.get("dyn_tau", 0.5),
+            "dyn_alpha": model_args.get("dyn_alpha", 0.15),
+            "dyn_static_weight": model_args.get("dyn_static_weight", 0.2),
+            "use_adaptive_adj": model_args.get("use_adaptive_adj", True),
+            "adp_hidden_dim": model_args.get("adp_hidden_dim", 32),
+            "adp_topk": model_args.get("adp_topk", 20),
+            "adp_tau": model_args.get("adp_tau", 0.5),
+            "adp_alpha": model_args.get("adp_alpha", 0.1),
+            "use_hybrid_graph": model_args.get("use_hybrid_graph", False),
+            "hybrid_alpha": model_args.get("hybrid_alpha", 0.2),
+            "use_lightweight_spatial": model_args.get("use_lightweight_spatial", False),
+            "light_alpha": model_args.get("light_alpha", 0.05),
+            "post_spatial_mode": model_args.get("post_spatial_mode", "adaptive_only"),
+            "adaptive_ms_topks": model_args.get("adaptive_ms_topks", [8, 16, 32]),
+            "adaptive_ms_alpha": model_args.get("adaptive_ms_alpha", 0.10),
+            "adaptive_ms_fusion": model_args.get("adaptive_ms_fusion", "softmax"),
+            "adaptive_ms_share_logits": model_args.get("adaptive_ms_share_logits", True),
+            "adaptive_ms_init": model_args.get("adaptive_ms_init", "favor_largest"),
+        }
+        kwargs.update(overrides)
+        return kwargs
 
     def _build_progressive_spatial_modules(
         self,
@@ -320,26 +338,17 @@ class ChainForecasting(nn.Module):
                     input_len=self.input_len,
                     d_spa=self.d_spa,
                     if_spatial=self.if_spatial,
-                    spatial_scheme=self.spatial_scheme,
-                    adj_mx_path=model_args.get("adj_mx_path"),
-                    use_gcn=model_args.get("use_gcn", False),
-                    gcn_hidden_dim=model_args.get("gcn_hidden_dim", 64),
-                    use_dynamic_spatial=model_args.get("use_dynamic_spatial", False),
-                    dyn_hidden_dim=max(8, int(model_args.get("dyn_hidden_dim", 64) * ratio)),
-                    dyn_topk=topk,
-                    dyn_tau=model_args.get("dyn_tau", 0.5),
-                    dyn_alpha=alpha,
-                    dyn_static_weight=model_args.get("dyn_static_weight", 0.2),
-                    use_adaptive_adj=model_args.get("use_adaptive_adj", True),
-                    adp_hidden_dim=max(8, int(model_args.get("adp_hidden_dim", 32) * ratio)),
-                    adp_topk=topk,
-                    adp_tau=model_args.get("adp_tau", 0.5),
-                    adp_alpha=alpha,
-                    use_hybrid_graph=model_args.get("use_hybrid_graph", False),
-                    hybrid_alpha=alpha,
-                    use_lightweight_spatial=model_args.get("use_lightweight_spatial", False),
-                    light_alpha=alpha,
-                    post_spatial_mode=self.post_spatial_mode,
+                    **self._abcd_spatial_kwargs(
+                        model_args,
+                        dyn_hidden_dim=max(8, int(model_args.get("dyn_hidden_dim", 64) * ratio)),
+                        dyn_topk=topk,
+                        dyn_alpha=alpha,
+                        adp_hidden_dim=max(8, int(model_args.get("adp_hidden_dim", 32) * ratio)),
+                        adp_topk=topk,
+                        adp_alpha=alpha,
+                        hybrid_alpha=alpha,
+                        light_alpha=alpha,
+                    ),
                 )
             )
         return modules
@@ -562,6 +571,19 @@ class ChainForecasting(nn.Module):
 
         return y, [y], [y], [y], spatial_stage_preds
 
+    def _collect_adaptive_ms_diagnostics(self) -> dict:
+        if self.post_spatial_mode != "adaptive_multiscale_only":
+            return {}
+        if self.spatial_placement == "final" and self.spatial_module is not None:
+            return self.spatial_module.get_adaptive_ms_diagnostics()
+        if (
+            self.spatial_placement == "temporal_first_graph_resolution"
+            and self.graph_resolution_stack is not None
+            and self.graph_resolution_stack.spatial_modules
+        ):
+            return self.graph_resolution_stack.spatial_modules[-1].get_adaptive_ms_diagnostics()
+        return {}
+
     def forward(
         self,
         history_data: torch.Tensor,
@@ -592,5 +614,6 @@ class ChainForecasting(nn.Module):
                 result["graph_resolution_diagnostics"] = self._last_graph_diagnostics
                 if self.graph_resolution_stack is not None:
                     result["graph_resolution_metadata"] = self.graph_resolution_stack.metadata()
+            result.update(self._collect_adaptive_ms_diagnostics())
             return result
         return y_final

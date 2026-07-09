@@ -104,6 +104,17 @@ class GraphResolutionSpatialStack(nn.Module):
 
             adp_dim = max(8, int(adp_hidden_dim * ratio))
             adp_k = min(topk, max(1, m_j - 1))
+            ms_kwargs = {
+                k: kwargs[k]
+                for k in (
+                    "adaptive_ms_topks",
+                    "adaptive_ms_alpha",
+                    "adaptive_ms_fusion",
+                    "adaptive_ms_share_logits",
+                    "adaptive_ms_init",
+                )
+                if k in kwargs
+            }
             self.spatial_modules.append(
                 ABCDSpatialModule(
                     node_size=m_j,
@@ -122,6 +133,7 @@ class GraphResolutionSpatialStack(nn.Module):
                     use_hybrid_graph=False,
                     hybrid_alpha=alpha,
                     post_spatial_mode=self.post_spatial_mode,
+                    **ms_kwargs,
                 )
             )
 

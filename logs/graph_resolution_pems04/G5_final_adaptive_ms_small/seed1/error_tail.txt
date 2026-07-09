@@ -1,0 +1,120 @@
+ 71%|███████   | 227/319 [00:17<00:06, 13.73it/s]
+ 72%|███████▏  | 229/319 [00:17<00:06, 13.69it/s]
+ 72%|███████▏  | 231/319 [00:17<00:06, 13.61it/s]
+ 73%|███████▎  | 233/319 [00:17<00:06, 13.60it/s]
+ 74%|███████▎  | 235/319 [00:17<00:06, 13.63it/s]
+ 74%|███████▍  | 237/319 [00:17<00:05, 13.68it/s]
+ 75%|███████▍  | 239/319 [00:18<00:05, 13.70it/s]
+ 76%|███████▌  | 241/319 [00:18<00:05, 13.74it/s]
+ 76%|███████▌  | 243/319 [00:18<00:05, 13.70it/s]
+ 77%|███████▋  | 245/319 [00:18<00:05, 13.72it/s]
+ 77%|███████▋  | 247/319 [00:18<00:05, 13.70it/s]
+ 78%|███████▊  | 249/319 [00:18<00:05, 13.80it/s]
+ 79%|███████▊  | 251/319 [00:18<00:04, 13.80it/s]
+ 79%|███████▉  | 253/319 [00:19<00:04, 13.67it/s]
+ 80%|███████▉  | 255/319 [00:19<00:04, 13.77it/s]
+ 81%|████████  | 257/319 [00:19<00:04, 13.66it/s]
+ 81%|████████  | 259/319 [00:19<00:04, 13.76it/s]
+ 82%|████████▏ | 261/319 [00:19<00:04, 13.76it/s]
+ 82%|████████▏ | 263/319 [00:19<00:04, 13.59it/s]
+ 83%|████████▎ | 265/319 [00:20<00:03, 13.59it/s]
+ 84%|████████▎ | 267/319 [00:20<00:03, 13.68it/s]
+ 84%|████████▍ | 269/319 [00:20<00:03, 13.74it/s]
+ 85%|████████▍ | 271/319 [00:20<00:03, 13.73it/s]
+ 86%|████████▌ | 273/319 [00:20<00:03, 13.67it/s]
+ 86%|████████▌ | 275/319 [00:20<00:03, 13.85it/s]
+ 87%|████████▋ | 277/319 [00:20<00:03, 13.91it/s]
+ 87%|████████▋ | 279/319 [00:21<00:02, 13.91it/s]
+ 88%|████████▊ | 281/319 [00:21<00:02, 13.77it/s]
+ 89%|████████▊ | 283/319 [00:21<00:02, 13.80it/s]
+ 89%|████████▉ | 285/319 [00:21<00:02, 13.78it/s]
+ 90%|████████▉ | 287/319 [00:21<00:02, 13.82it/s]
+ 91%|█████████ | 289/319 [00:21<00:02, 13.79it/s]
+ 91%|█████████ | 291/319 [00:21<00:02, 13.77it/s]
+ 92%|█████████▏| 293/319 [00:22<00:01, 13.80it/s]
+ 92%|█████████▏| 295/319 [00:22<00:01, 13.55it/s]
+ 93%|█████████▎| 297/319 [00:22<00:01, 13.58it/s]
+ 94%|█████████▎| 299/319 [00:22<00:01, 13.67it/s]
+ 94%|█████████▍| 301/319 [00:22<00:01, 13.52it/s]
+ 95%|█████████▍| 303/319 [00:22<00:01, 13.51it/s]
+ 96%|█████████▌| 305/319 [00:22<00:01, 13.59it/s]
+ 96%|█████████▌| 307/319 [00:23<00:00, 13.56it/s]
+ 97%|█████████▋| 309/319 [00:23<00:00, 13.59it/s]
+ 97%|█████████▋| 311/319 [00:23<00:00, 13.59it/s]
+ 98%|█████████▊| 313/319 [00:23<00:00, 13.46it/s]
+ 99%|█████████▊| 315/319 [00:23<00:00, 13.46it/s]
+ 99%|█████████▉| 317/319 [00:23<00:00, 13.53it/s]
+100%|██████████| 319/319 [00:24<00:00, 12.97it/s]
+100%|██████████| 319/319 [00:24<00:00, 13.26it/s]
+2026-07-09 10:46:47,646 - easytorch-training - INFO - Result <train>: [train_time: 24.07 (s), lr: 2.00e-03, train_MAE: 33.9733, train_RMSE: 47.8830, train_MAPE: 0.3763]
+2026-07-09 10:46:47,647 - easytorch-training - INFO - Start validation.
+
+  0%|          | 0/107 [00:00<?, ?it/s]
+  1%|          | 1/107 [00:00<00:14,  7.48it/s]
+  6%|▌         | 6/107 [00:00<00:03, 27.60it/s]
+ 10%|█         | 11/107 [00:00<00:02, 35.10it/s]
+ 15%|█▍        | 16/107 [00:00<00:02, 38.81it/s]
+ 20%|█▉        | 21/107 [00:00<00:02, 40.91it/s]
+ 24%|██▍       | 26/107 [00:00<00:01, 42.19it/s]
+ 29%|██▉       | 31/107 [00:00<00:01, 43.00it/s]
+ 34%|███▎      | 36/107 [00:00<00:01, 43.55it/s]
+ 38%|███▊      | 41/107 [00:01<00:01, 43.93it/s]
+ 43%|████▎     | 46/107 [00:01<00:01, 44.19it/s]
+ 48%|████▊     | 51/107 [00:01<00:01, 44.36it/s]
+ 52%|█████▏    | 56/107 [00:01<00:01, 44.49it/s]
+ 57%|█████▋    | 61/107 [00:01<00:01, 44.55it/s]
+ 62%|██████▏   | 66/107 [00:01<00:00, 44.60it/s]
+ 66%|██████▋   | 71/107 [00:01<00:00, 44.65it/s]
+ 71%|███████   | 76/107 [00:01<00:00, 44.63it/s]
+ 76%|███████▌  | 81/107 [00:01<00:00, 44.67it/s]
+ 80%|████████  | 86/107 [00:02<00:00, 44.64it/s]
+ 85%|████████▌ | 91/107 [00:02<00:00, 44.67it/s]
+ 90%|████████▉ | 96/107 [00:02<00:00, 44.62it/s]
+ 94%|█████████▍| 101/107 [00:02<00:00, 44.65it/s]
+ 99%|█████████▉| 106/107 [00:02<00:00, 44.70it/s]
+100%|██████████| 107/107 [00:02<00:00, 41.18it/s]
+2026-07-09 10:46:50,250 - easytorch-training - INFO - Result <val>: [val_time: 2.60 (s), val_MAE: 26.7644, val_RMSE: 37.6408, val_MAPE: 0.2865]
+2026-07-09 10:46:50,416 - easytorch-training - INFO - Checkpoint checkpoints/graph_resolution_pems04/G5_final_adaptive_ms_small/seed1/ef083a233cfc6b34958f04b3f68e78ca/ChainForecasting_best_val_MAE.pt saved
+2026-07-09 10:46:50,416 - easytorch-training - ERROR - Traceback (most recent call last):
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 31, in training_func
+    runner.train(cfg)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/core/runner.py", line 349, in train
+    self.on_epoch_end(epoch)
+  File "/home/dhz/KASA-ST/basicts/runners/base_runner.py", line 145, in on_epoch_end
+    self.validate(train_epoch=epoch)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/utils/dist.py", line 102, in wrapper
+    return func(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/core/runner.py", line 537, in validate
+    self.on_validating_end(train_epoch)
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 145, in on_validating_end
+    post_mode = str(self.cfg["MODEL"]["PARAM"].get("post_spatial_mode", "")).lower()
+AttributeError: 'ChainForecastingRunner' object has no attribute 'cfg'
+
+Traceback (most recent call last):
+  File "/home/dhz/KASA-ST/examples/run.py", line 88, in <module>
+    main()
+  File "/home/dhz/KASA-ST/examples/run.py", line 84, in main
+    launch_training(args.cfg, devices)
+  File "/home/dhz/KASA-ST/basicts/launcher.py", line 23, in launch_training
+    easytorch.launch_training(cfg=cfg, devices=gpus, node_rank=node_rank)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 86, in launch_training
+    train_dist(cfg)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 35, in training_func
+    raise e
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 31, in training_func
+    runner.train(cfg)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/core/runner.py", line 349, in train
+    self.on_epoch_end(epoch)
+  File "/home/dhz/KASA-ST/basicts/runners/base_runner.py", line 145, in on_epoch_end
+    self.validate(train_epoch=epoch)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/utils/dist.py", line 102, in wrapper
+    return func(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/core/runner.py", line 537, in validate
+    self.on_validating_end(train_epoch)
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 145, in on_validating_end
+    post_mode = str(self.cfg["MODEL"]["PARAM"].get("post_spatial_mode", "")).lower()
+AttributeError: 'ChainForecastingRunner' object has no attribute 'cfg'

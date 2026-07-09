@@ -106,6 +106,11 @@ class ABCDSpatialModule(nn.Module):
         use_lightweight_spatial=False,
         light_alpha=0.05,
         post_spatial_mode="hybrid",
+        adaptive_ms_topks=None,
+        adaptive_ms_alpha=0.10,
+        adaptive_ms_fusion="softmax",
+        adaptive_ms_share_logits=True,
+        adaptive_ms_init="favor_largest",
     ):
         super().__init__()
         self.node_size = node_size
@@ -113,6 +118,7 @@ class ABCDSpatialModule(nn.Module):
         self.d_spa = d_spa
         self.if_spatial = if_spatial
         self.spatial_scheme = str(spatial_scheme).upper()
+        self.post_spatial_mode = str(post_spatial_mode).lower()
 
         # Control flags (explicit flags + scheme override).
         self.use_gcn = use_gcn
@@ -120,6 +126,13 @@ class ABCDSpatialModule(nn.Module):
         self.use_adaptive_adj = use_adaptive_adj
         self.use_hybrid_graph = use_hybrid_graph
         self.use_lightweight_spatial = use_lightweight_spatial
+
+        if self.post_spatial_mode == "adaptive_multiscale_only":
+            self.use_adaptive_adj = True
+            self.use_dynamic_spatial = False
+            self.use_hybrid_graph = False
+            self.use_gcn = False
+            self.use_lightweight_spatial = False
 
         if self.spatial_scheme in {"A", "B", "C", "D"}:
             self.use_gcn = self.spatial_scheme in {"A", "C"}
@@ -145,15 +158,23 @@ class ABCDSpatialModule(nn.Module):
 
         self.hybrid_alpha = hybrid_alpha
         self.light_alpha = light_alpha
-        self.post_spatial_mode = str(post_spatial_mode).lower()
+
+        self.adaptive_ms_topks = list(adaptive_ms_topks or [8, 16, 32])
+        self.adaptive_ms_alpha = float(adaptive_ms_alpha)
+        self.adaptive_ms_fusion = str(adaptive_ms_fusion).lower()
+        self.adaptive_ms_share_logits = bool(adaptive_ms_share_logits)
+        self.adaptive_ms_init = str(adaptive_ms_init).lower()
 
         # Static adjacency buffer.
         self.register_buffer("adj_mx", None)
         need_static_adj = (
-            self.use_gcn
-            or self.use_dynamic_spatial
-            or self.use_lightweight_spatial
-            or self.use_hybrid_graph
+            self.post_spatial_mode != "adaptive_multiscale_only"
+            and (
+                self.use_gcn
+                or self.use_dynamic_spatial
+                or self.use_lightweight_spatial
+                or self.use_hybrid_graph
+            )
         )
         if need_static_adj:
             self.adj_mx = load_adj_from_pickle(adj_mx_path)
@@ -185,7 +206,33 @@ class ABCDSpatialModule(nn.Module):
         if self.use_hybrid_graph:
             self.hybrid_logits = nn.Parameter(torch.zeros(3))
 
+        self.adaptive_ms_logits = None
+        self.adaptive_ms_src_list = None
+        self.adaptive_ms_dst_list = None
+        if self.post_spatial_mode == "adaptive_multiscale_only":
+            num_scales = len(self.adaptive_ms_topks)
+            if self.adaptive_ms_fusion != "softmax":
+                raise ValueError(
+                    f"Unsupported adaptive_ms_fusion: {self.adaptive_ms_fusion}. "
+                    "Only 'softmax' is supported in v1."
+                )
+            self.adaptive_ms_logits = nn.Parameter(
+                self._init_adaptive_ms_logits(num_scales, self.adaptive_ms_init)
+            )
+            if not self.adaptive_ms_share_logits:
+                self.adaptive_ms_src_list = nn.ParameterList()
+                self.adaptive_ms_dst_list = nn.ParameterList()
+                for _ in range(num_scales):
+                    src = nn.Parameter(torch.empty(self.node_size, self.adp_hidden_dim))
+                    dst = nn.Parameter(torch.empty(self.node_size, self.adp_hidden_dim))
+                    nn.init.xavier_uniform_(src)
+                    nn.init.xavier_uniform_(dst)
+                    self.adaptive_ms_src_list.append(src)
+                    self.adaptive_ms_dst_list.append(dst)
+
         self.last_adaptive_adj = None
+        self.last_adaptive_ms_weights = None
+        self.last_adaptive_ms_entropy = None
 
     def _build_dynamic_adj(self, history_flow):
         node_signal = history_flow.permute(0, 2, 1)  # [B, N, L]
@@ -208,6 +255,78 @@ class ABCDSpatialModule(nn.Module):
         logits = mask_topk(logits, self.adp_topk)
         adp_adj = torch.softmax(logits / max(self.adp_tau, 1e-6), dim=-1)
         return adp_adj
+
+    @staticmethod
+    def _init_adaptive_ms_logits(num_scales: int, init_mode: str = "favor_largest") -> torch.Tensor:
+        if num_scales <= 0:
+            raise ValueError("adaptive_ms_topks must be non-empty.")
+        if init_mode == "uniform":
+            return torch.zeros(num_scales)
+        if init_mode == "favor_largest":
+            if num_scales == 1:
+                return torch.zeros(1)
+            return torch.linspace(-2.94, 0.0, num_scales)
+        raise ValueError(
+            f"Unsupported adaptive_ms_init: {init_mode}. "
+            "Expected 'uniform' or 'favor_largest'."
+        )
+
+    def _build_shared_adaptive_logits(self) -> torch.Tensor:
+        src = F.normalize(self.adaptive_src, p=2, dim=-1)
+        dst = F.normalize(self.adaptive_dst, p=2, dim=-1)
+        return torch.matmul(src, dst.transpose(0, 1)) / sqrt(self.adp_hidden_dim)
+
+    def _build_scale_adaptive_logits(self, scale_idx: int) -> torch.Tensor:
+        src = F.normalize(self.adaptive_ms_src_list[scale_idx], p=2, dim=-1)
+        dst = F.normalize(self.adaptive_ms_dst_list[scale_idx], p=2, dim=-1)
+        return torch.matmul(src, dst.transpose(0, 1)) / sqrt(self.adp_hidden_dim)
+
+    def _build_adaptive_adj_at_k(self, logits: torch.Tensor, topk: int) -> torch.Tensor:
+        masked = mask_topk(logits, int(topk))
+        return torch.softmax(masked / max(self.adp_tau, 1e-6), dim=-1)
+
+    def _fuse_adaptive_ms_deltas(self, deltas: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        weights = torch.softmax(self.adaptive_ms_logits, dim=0)
+        stacked = torch.stack(deltas, dim=0)
+        fused = torch.einsum("k,kbtn->btn", weights, stacked)
+        entropy = -(weights * (weights + 1e-12).log()).sum()
+        self.last_adaptive_ms_weights = weights.detach()
+        self.last_adaptive_ms_entropy = float(entropy.detach().item())
+        return fused, weights
+
+    def _refine_adaptive_multiscale(self, output: torch.Tensor, history_flow: torch.Tensor) -> torch.Tensor:
+        del history_flow  # adaptive-only: no dynamic/static/hybrid graph input.
+        x = output.squeeze(-1)
+        deltas: list[torch.Tensor] = []
+        if self.adaptive_ms_share_logits:
+            logits_s = self._build_shared_adaptive_logits()
+            self.last_adaptive_adj = self._build_adaptive_adj_at_k(
+                logits_s, self.adaptive_ms_topks[-1]
+            ).detach()
+            for topk in self.adaptive_ms_topks:
+                adj_k = self._build_adaptive_adj_at_k(logits_s, topk)
+                deltas.append(apply_adj(x, adj_k))
+        else:
+            for scale_idx, topk in enumerate(self.adaptive_ms_topks):
+                logits_k = self._build_scale_adaptive_logits(scale_idx)
+                adj_k = self._build_adaptive_adj_at_k(logits_k, topk)
+                if scale_idx == len(self.adaptive_ms_topks) - 1:
+                    self.last_adaptive_adj = adj_k.detach()
+                deltas.append(apply_adj(x, adj_k))
+
+        fused_delta, _ = self._fuse_adaptive_ms_deltas(deltas)
+        return output + self.adaptive_ms_alpha * fused_delta.unsqueeze(-1)
+
+    def get_adaptive_ms_diagnostics(self) -> dict:
+        weights = self.last_adaptive_ms_weights
+        if weights is None:
+            weights = torch.softmax(self.adaptive_ms_logits, dim=0).detach()
+        return {
+            "adaptive_ms_weights": weights,
+            "adaptive_ms_topks": list(self.adaptive_ms_topks),
+            "adaptive_ms_alpha": self.adaptive_ms_alpha,
+            "adaptive_ms_entropy": self.last_adaptive_ms_entropy,
+        }
 
     def _build_hybrid_adj(self, history_flow):
         batch_size = history_flow.shape[0]
@@ -274,6 +393,9 @@ class ABCDSpatialModule(nn.Module):
         """
         if self.post_spatial_mode == "none":
             return output
+
+        if self.post_spatial_mode == "adaptive_multiscale_only":
+            return self._refine_adaptive_multiscale(output, history_flow)
 
         x = output.squeeze(-1)
 

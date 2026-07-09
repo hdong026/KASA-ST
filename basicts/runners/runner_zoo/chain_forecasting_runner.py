@@ -23,6 +23,7 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         self.spatial_graph_loss_weights = list(
             param.get("spatial_graph_loss_weights", [0.0, 0.0, 0.0])
         )
+        self.post_spatial_mode = str(param.get("post_spatial_mode", "")).lower()
 
     def forward(
         self,
@@ -139,3 +140,43 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             self.update_epoch_meter("train_" + metric_name, metric_item.item())
 
         return loss
+
+    def on_validating_end(self, train_epoch=None):
+        super().on_validating_end(train_epoch)
+        post_mode = self.post_spatial_mode
+        if post_mode != "adaptive_multiscale_only":
+            return
+        model = self.model
+        if not hasattr(model, "spatial_module") and not hasattr(model, "graph_resolution_stack"):
+            return
+        weights = None
+        topks = None
+        alpha = None
+        entropy = None
+        if hasattr(model, "spatial_module") and model.spatial_module is not None:
+            diag = model.spatial_module.get_adaptive_ms_diagnostics()
+            weights = diag.get("adaptive_ms_weights")
+            topks = diag.get("adaptive_ms_topks")
+            alpha = diag.get("adaptive_ms_alpha")
+            entropy = diag.get("adaptive_ms_entropy")
+        elif (
+            hasattr(model, "graph_resolution_stack")
+            and model.graph_resolution_stack is not None
+            and model.graph_resolution_stack.spatial_modules
+        ):
+            diag = model.graph_resolution_stack.spatial_modules[-1].get_adaptive_ms_diagnostics()
+            weights = diag.get("adaptive_ms_weights")
+            topks = diag.get("adaptive_ms_topks")
+            alpha = diag.get("adaptive_ms_alpha")
+            entropy = diag.get("adaptive_ms_entropy")
+        if weights is None:
+            return
+        w_list = weights.detach().cpu().tolist()
+        if isinstance(w_list, float):
+            w_list = [w_list]
+        topk_str = ",".join(str(k) for k in (topks or []))
+        w_str = ",".join(f"{w:.4f}" for w in w_list)
+        self.logger.info(
+            f"[AdaptiveMS epoch={train_epoch}] topks=[{topk_str}] "
+            f"weights=[{w_str}] alpha={alpha} entropy={entropy}"
+        )
