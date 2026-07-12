@@ -46,6 +46,34 @@ GRAPH_RES_KEYS = (
     "graph_resolution_rhos",
 )
 
+GR7_SPARSE_BASE: dict[str, Any] = {
+    "spatial_placement": "temporal_first_graph_resolution",
+    "post_spatial_mode": "adaptive_only",
+    "graph_resolution_ratios": [0.25, 0.50, 1.00],
+    "graph_resolution_alphas": [0.03, 0.06, 0.10],
+    "graph_resolution_topks": [4, 8, 16],
+    "graph_resolution_betas": [1.0, 1.0, 1.0],
+    "graph_resolution_rhos": [0.25, 0.50, 1.00],
+    "clustering_seed": 0,
+    "dataset_name": "PEMS04",
+    "graph_cluster_method": "current",
+}
+
+
+def graph_stage_loss_weights(num_stages: int) -> list[float]:
+    """Per-stage node MAE weights for graph resolution intermediate outputs.
+
+    The runner skips the final stage (already covered by chain_loss_weights[-1]).
+    Coarse-to-fine weights increase linearly: 0.10, 0.20, 0.30, ...
+    """
+    if num_stages <= 1:
+        return [0.15]
+    return [round(0.10 * (i + 1), 2) for i in range(num_stages - 1)] + [0.0]
+
+PEMS04_SPATIAL_DISTANCE = os.path.join(
+    "datasets", "raw_data", "PEMS04", "adj_PEMS04_distance.pkl"
+)
+
 COMMON_FIXED: dict[str, Any] = {
     "chain_lengths": [3, 6, 12],
     "chain_loss_weights": [0.2, 0.3, 1.0],
@@ -135,6 +163,92 @@ VARIANT_SPECS: dict[str, dict[str, Any]] = {
         "graph_resolution_betas": [1.0, 1.0, 1.0],
         "graph_resolution_rhos": [0.25, 0.50, 1.00],
         "clustering_seed": 0,
+    },
+    "GR7_sparse_topk": {
+        **GR7_SPARSE_BASE,
+    },
+    "GR8_ultra_sparse_topk": {
+        **GR7_SPARSE_BASE,
+        "graph_resolution_topks": [2, 4, 8],
+    },
+    "GR14_two_level_sparse": {
+        **GR7_SPARSE_BASE,
+        "graph_resolution_ratios": [0.50, 1.00],
+        "graph_resolution_alphas": [0.06, 0.10],
+        "graph_resolution_topks": [8, 16],
+        "graph_resolution_betas": [1.0, 1.0],
+        "graph_resolution_rhos": [0.50, 1.00],
+    },
+    "GR15_four_level_sparse": {
+        **GR7_SPARSE_BASE,
+        "graph_resolution_ratios": [0.125, 0.25, 0.50, 1.00],
+        "graph_resolution_alphas": [0.02, 0.04, 0.06, 0.10],
+        "graph_resolution_topks": [2, 4, 8, 16],
+        "graph_resolution_betas": [1.0, 1.0, 1.0, 1.0],
+        "graph_resolution_rhos": [0.125, 0.25, 0.50, 1.00],
+    },
+    "GR16_one_level_sparse": {
+        **GR7_SPARSE_BASE,
+        "graph_resolution_ratios": [1.00],
+        "graph_resolution_alphas": [0.10],
+        "graph_resolution_topks": [16],
+        "graph_resolution_betas": [1.0],
+        "graph_resolution_rhos": [1.00],
+    },
+    "GR7_sparse_topk_stageloss": {
+        **GR7_SPARSE_BASE,
+        "spatial_graph_loss_weights": graph_stage_loss_weights(3),
+    },
+    "GR14_two_level_sparse_stageloss": {
+        **GR7_SPARSE_BASE,
+        "graph_resolution_ratios": [0.50, 1.00],
+        "graph_resolution_alphas": [0.06, 0.10],
+        "graph_resolution_topks": [8, 16],
+        "graph_resolution_betas": [1.0, 1.0],
+        "graph_resolution_rhos": [0.50, 1.00],
+        "spatial_graph_loss_weights": graph_stage_loss_weights(2),
+    },
+    "GR15_four_level_sparse_stageloss": {
+        **GR7_SPARSE_BASE,
+        "graph_resolution_ratios": [0.125, 0.25, 0.50, 1.00],
+        "graph_resolution_alphas": [0.02, 0.04, 0.06, 0.10],
+        "graph_resolution_topks": [2, 4, 8, 16],
+        "graph_resolution_betas": [1.0, 1.0, 1.0, 1.0],
+        "graph_resolution_rhos": [0.125, 0.25, 0.50, 1.00],
+        "spatial_graph_loss_weights": graph_stage_loss_weights(4),
+    },
+    "GR16_one_level_sparse_stageloss": {
+        **GR7_SPARSE_BASE,
+        "graph_resolution_ratios": [1.00],
+        "graph_resolution_alphas": [0.10],
+        "graph_resolution_topks": [16],
+        "graph_resolution_betas": [1.0],
+        "graph_resolution_rhos": [1.00],
+        "spatial_graph_loss_weights": graph_stage_loss_weights(1),
+    },
+    "GR9_pearson_balanced_pam": {
+        **GR7_SPARSE_BASE,
+        "graph_cluster_method": "pearson_balanced_pam",
+    },
+    "GR10_xcorr_balanced_pam": {
+        **GR7_SPARSE_BASE,
+        "graph_cluster_method": "xcorr_balanced_pam",
+        "cluster_max_lag": 12,
+    },
+    "GR11_joint_pearson_spatial_pam": {
+        **GR7_SPARSE_BASE,
+        "graph_cluster_method": "joint_pearson_spatial_balanced_pam",
+        "cluster_lambda_s": 0.2,
+        "cluster_spatial_coord_path": PEMS04_SPATIAL_DISTANCE,
+    },
+    "GR12_pearson_standard_pam": {
+        **GR7_SPARSE_BASE,
+        "graph_cluster_method": "pearson_standard_pam",
+    },
+    "GR13_autocorr_feature_pam": {
+        **GR7_SPARSE_BASE,
+        "graph_cluster_method": "autocorr_feature_balanced_pam",
+        "cluster_acf_lag": 24,
     },
     "G3_final_adaptive_ms": {
         "spatial_placement": "final",
@@ -339,25 +453,48 @@ def count_params(cfg_path: Path) -> int | None:
         return None
 
 
+def pick_canonical_training_log(ckpt_base: Path) -> Path | None:
+    """Pick the largest training_log in the newest run subdir (complete run)."""
+    if not ckpt_base.is_dir():
+        return None
+    run_dirs = sorted(
+        [d for d in ckpt_base.iterdir() if d.is_dir()],
+        key=lambda d: d.stat().st_mtime,
+        reverse=True,
+    )
+    candidates: list[Path] = []
+    for run_dir in run_dirs:
+        candidates.extend(run_dir.glob("training_log_*.log"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_size)
+
+
 def collect_log_text(variant: str, seed: int, log_root: Path, ckpt_root: Path) -> str:
     parts: list[str] = []
     log_dir = log_dir_for(variant, seed, log_root)
-    for name in ("train.log", "wrapper.log"):
-        p = log_dir / name
-        if p.is_file():
-            parts.append(p.read_text(errors="replace"))
+    wrapper = log_dir / "train.log"
+    if wrapper.is_file():
+        parts.append(wrapper.read_text(errors="replace"))
     ckpt_base = ckpt_dir_for(variant, seed, ckpt_root)
-    if ckpt_base.is_dir():
-        for tlog in sorted(
-            ckpt_base.glob("*/training_log_*.log"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        ):
-            parts.append(tlog.read_text(errors="replace"))
+    tlog = pick_canonical_training_log(ckpt_base)
+    if tlog is not None:
+        parts.append(tlog.read_text(errors="replace"))
     return "\n".join(parts)
 
 
-def parse_training_log(log_text: str) -> dict[str, Any]:
+def collect_log_sources(variant: str, seed: int, log_root: Path, ckpt_root: Path) -> dict[str, str]:
+    log_dir = log_dir_for(variant, seed, log_root)
+    ckpt_base = ckpt_dir_for(variant, seed, ckpt_root)
+    tlog = pick_canonical_training_log(ckpt_base)
+    return {
+        "parsed_wrapper_log": str(log_dir / "train.log") if (log_dir / "train.log").is_file() else "",
+        "parsed_training_log": str(tlog) if tlog is not None else "",
+        "parsed_checkpoint_dir": str(ckpt_base),
+    }
+
+
+def parse_training_log(log_text: str, source: str = "") -> dict[str, Any]:
     out: dict[str, Any] = {
         "best_val_mae": None,
         "test_mae_at_best_val": None,
@@ -370,6 +507,8 @@ def parse_training_log(log_text: str) -> dict[str, Any]:
         "train_mae_at_best_val": None,
         "epoch_time": None,
         "total_time": None,
+        "parsed_val_source": source,
+        "parsed_test_source": source,
     }
     if not log_text.strip():
         return out
@@ -380,6 +519,8 @@ def parse_training_log(log_text: str) -> dict[str, Any]:
     last_train_time: float | None = None
     last_val_time: float | None = None
     total_time = 0.0
+
+    best_val_so_far = float("inf")
 
     lines = log_text.splitlines()
     for i, line in enumerate(lines):
@@ -404,22 +545,27 @@ def parse_training_log(log_text: str) -> dict[str, Any]:
                 total_time += last_val_time
 
         if BEST_CKPT.search(line):
-            out["best_val_mae"] = last_val_mae
-            out["best_epoch"] = current_epoch
-            out["train_mae_at_best_val"] = last_train_mae
-            epoch_parts = [t for t in (last_train_time, last_val_time) if t is not None]
-            for j in range(i + 1, min(i + 40, len(lines))):
-                tm = TEST_BLOCK.search(lines[j])
-                if tm:
-                    out["test_mae_at_best_val"] = float(tm.group(1))
-                    out["test_rmse_at_best_val"] = float(tm.group(2))
-                    out["test_mape_at_best_val"] = float(tm.group(3))
-                    ttm = TEST_TIME.search(lines[j])
-                    if ttm:
-                        epoch_parts.append(float(ttm.group(1)))
-                    break
-            if epoch_parts:
-                out["epoch_time"] = sum(epoch_parts)
+            if last_val_mae is None:
+                continue
+            if last_val_mae <= best_val_so_far:
+                best_val_so_far = last_val_mae
+                out["best_val_mae"] = last_val_mae
+                out["best_epoch"] = current_epoch
+                out["train_mae_at_best_val"] = last_train_mae
+                epoch_parts = [t for t in (last_train_time, last_val_time) if t is not None]
+                for j in range(i + 1, min(i + 40, len(lines))):
+                    tm = TEST_BLOCK.search(lines[j])
+                    if tm:
+                        out["test_mae_at_best_val"] = float(tm.group(1))
+                        out["test_rmse_at_best_val"] = float(tm.group(2))
+                        out["test_mape_at_best_val"] = float(tm.group(3))
+                        out["parsed_test_source"] = source
+                        ttm = TEST_TIME.search(lines[j])
+                        if ttm:
+                            epoch_parts.append(float(ttm.group(1)))
+                        break
+                if epoch_parts:
+                    out["epoch_time"] = sum(epoch_parts)
 
         m = TEST_BLOCK.search(line)
         if m:
@@ -453,6 +599,10 @@ def base_row(variant: str, seed: int, cfg_path: Path, ckpt_root: Path) -> dict[s
         "graph_resolution_betas": fmt_list(spec.get("graph_resolution_betas")),
         "graph_resolution_rhos": fmt_list(spec.get("graph_resolution_rhos")),
         "clustering_seed": spec.get("clustering_seed", ""),
+        "graph_cluster_method": spec.get("graph_cluster_method", "current"),
+        "cluster_max_lag": spec.get("cluster_max_lag", ""),
+        "cluster_lambda_s": spec.get("cluster_lambda_s", ""),
+        "cluster_acf_lag": spec.get("cluster_acf_lag", ""),
         "best_epoch": None,
         "best_val_mae": None,
         "test_mae_at_best_val": None,
@@ -482,8 +632,11 @@ def summarize_row(
     log_dir = log_dir_for(variant, seed, log_root)
     train_log = log_dir / "train.log"
     row["log_file"] = str(train_log) if train_log.is_file() else ""
-    parsed = parse_training_log(collect_log_text(variant, seed, log_root, ckpt_root))
+    sources = collect_log_sources(variant, seed, log_root, ckpt_root)
+    tlog = sources.get("parsed_training_log") or ""
+    parsed = parse_training_log(collect_log_text(variant, seed, log_root, ckpt_root), source=tlog)
     row.update(parsed)
+    row.update(sources)
     if parsed.get("test_mae_at_best_val") is not None:
         row["status"] = "ok"
     elif parsed.get("final_test_mae") is not None:
@@ -580,8 +733,13 @@ def run_one(
     try:
         with open(log_file, "w", encoding="utf-8") as lf:
             proc = subprocess.run(cmd, cwd=str(ROOT), env=env, stdout=lf, stderr=subprocess.STDOUT)
-        parsed = parse_training_log(collect_log_text(variant, seed, log_root, ckpt_root))
+        sources = collect_log_sources(variant, seed, log_root, ckpt_root)
+        tlog = sources.get("parsed_training_log") or ""
+        parsed = parse_training_log(
+            collect_log_text(variant, seed, log_root, ckpt_root), source=tlog
+        )
         row.update(parsed)
+        row.update(sources)
         if proc.returncode != 0:
             row["status"] = f"exit_{proc.returncode}"
             row["error_message"] = save_error_tail(log_file, variant, seed, log_root)
@@ -698,6 +856,7 @@ def auto_conclusions(rows: list[dict], summary: list[dict]) -> list[str]:
     g5 = mean_for("G5_final_adaptive_ms_small")
     gr0 = mean_for("GR0_default")
     gr6 = mean_for("GR6_default_adaptive_ms")
+    gr7 = mean_for("GR7_sparse_topk")
     gr_variants = [s for s in ok_summary if s["variant"].startswith("GR")]
     if g3 is not None and g1 is not None:
         diff = g3 - g1
@@ -737,6 +896,21 @@ def auto_conclusions(rows: list[dict], summary: list[dict]) -> list[str]:
             f"{'更好' if diff < 0 else '更差' if diff > 0 else '持平'} "
             f"(ΔMAE = {fmt_val(diff)})."
         )
+    if gr7 is not None and gr0 is not None:
+        diff = gr7 - gr0
+        lines.append(
+            f"- sparse topk [4,8,16] (GR7_sparse_topk) vs default [8,16,32] (GR0_default): "
+            f"{'更好' if diff < 0 else '更差' if diff > 0 else '持平'} "
+            f"(ΔMAE = {fmt_val(diff)})."
+        )
+    gr9 = mean_for("GR9_pearson_balanced_pam")
+    if gr9 is not None and gr7 is not None:
+        diff = gr9 - gr7
+        lines.append(
+            f"- pearson balanced PAM (GR9) vs spectral baseline (GR7): "
+            f"{'更好' if diff < 0 else '更差' if diff > 0 else '持平'} "
+            f"(ΔMAE = {fmt_val(diff)})."
+        )
     if gr0 is not None and g0 is not None:
         diff = gr0 - g0
         lines.append(
@@ -750,6 +924,7 @@ def auto_conclusions(rows: list[dict], summary: list[dict]) -> list[str]:
         "GR0_default": mean_for("GR0_default"),
         "GR4_large_alpha": mean_for("GR4_large_alpha"),
         "GR5_dense_topk": mean_for("GR5_dense_topk"),
+        "GR7_sparse_topk": mean_for("GR7_sparse_topk"),
     }
     alpha_valid = {k: v for k, v in alpha_cmp.items() if v is not None}
     if alpha_valid:
@@ -790,10 +965,13 @@ def write_outputs(rows: list[dict], out_csv: Path, out_md: Path) -> None:
         "variant", "seed", "spatial_placement", "post_spatial_mode",
         "graph_resolution_ratios", "graph_resolution_alphas", "graph_resolution_topks",
         "graph_resolution_betas", "graph_resolution_rhos", "clustering_seed",
+        "graph_cluster_method", "cluster_max_lag", "cluster_lambda_s", "cluster_acf_lag",
         "best_epoch", "best_val_mae", "test_mae_at_best_val", "test_rmse_at_best_val",
         "test_mape_at_best_val", "final_test_mae", "train_mae_at_best_val",
         "params", "epoch_time", "total_time", "status", "error_message",
         "config_path", "checkpoint_dir", "log_file",
+        "parsed_training_log", "parsed_wrapper_log", "parsed_checkpoint_dir",
+        "parsed_val_source", "parsed_test_source",
     ]
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
@@ -852,6 +1030,28 @@ def write_outputs(rows: list[dict], out_csv: Path, out_md: Path) -> None:
     out_md.write_text("".join(md), encoding="utf-8")
 
 
+def variant_skip_reason(variant: str) -> str | None:
+    spec = variant_spec(variant)
+    method = str(spec.get("graph_cluster_method", "current")).lower()
+    if method == "joint_pearson_spatial_balanced_pam":
+        sp = spec.get("cluster_spatial_coord_path")
+        if not sp:
+            return "joint_pearson_spatial_balanced_pam requires cluster_spatial_coord_path"
+        p = Path(sp)
+        if not p.is_absolute():
+            p = ROOT / p
+        if not p.is_file():
+            return f"cluster_spatial_coord_path not found: {p}"
+    return None
+
+
+def skipped_row(variant: str, seed: int, cfg_path: Path, ckpt_root: Path, reason: str) -> dict[str, Any]:
+    row = base_row(variant, seed, cfg_path, ckpt_root)
+    row["status"] = "skipped"
+    row["error_message"] = reason
+    return row
+
+
 def dry_run_info(variant: str, seed: int, cfg_path: Path, ckpt_root: Path) -> None:
     spec = variant_spec(variant)
     cmd = f"{sys.executable} {RUN_PY} --cfg {cfg_for_easytorch(cfg_path)} --gpus <GPU>"
@@ -864,6 +1064,17 @@ def dry_run_info(variant: str, seed: int, cfg_path: Path, ckpt_root: Path) -> No
         for key in GRAPH_RES_KEYS:
             print(f"    {key}: {spec.get(key)}")
         print(f"    clustering_seed: {spec.get('clustering_seed')}")
+        print(f"    graph_cluster_method: {spec.get('graph_cluster_method', 'current')}")
+        if spec.get("cluster_max_lag") not in (None, ""):
+            print(f"    cluster_max_lag: {spec.get('cluster_max_lag')}")
+        if spec.get("cluster_lambda_s") not in (None, ""):
+            print(f"    cluster_lambda_s: {spec.get('cluster_lambda_s')}")
+        if spec.get("cluster_acf_lag") not in (None, ""):
+            print(f"    cluster_acf_lag: {spec.get('cluster_acf_lag')}")
+        if spec.get("cluster_spatial_coord_path"):
+            print(f"    cluster_spatial_coord_path: {spec.get('cluster_spatial_coord_path')}")
+        if spec.get("spatial_graph_loss_weights") not in (None, ""):
+            print(f"    spatial_graph_loss_weights: {spec.get('spatial_graph_loss_weights')}")
     if spec.get("post_spatial_mode") == "adaptive_multiscale_only":
         print(f"    adaptive_ms_topks: {spec.get('adaptive_ms_topks')}")
         print(f"    adaptive_ms_alpha: {spec.get('adaptive_ms_alpha')}")
@@ -918,8 +1129,14 @@ def main() -> int:
 
     job_keys = build_jobs(args.variants, args.seeds, args.schedule_order)
     configs: list[tuple[str, int, Path]] = []
+    skipped: list[dict[str, Any]] = []
     for variant, seed in job_keys:
+        skip_reason = variant_skip_reason(variant)
         cfg_path = generate_temp_config(variant, seed, base_cfg, work_dir, ckpt_root)
+        if skip_reason:
+            skipped.append(skipped_row(variant, seed, cfg_path, ckpt_root, skip_reason))
+            print(f"[skip-setup] {variant} seed={seed}: {skip_reason}")
+            continue
         try:
             validate_generated_config(cfg_path, variant)
         except Exception as e:
@@ -942,7 +1159,7 @@ def main() -> int:
         return 0
 
     if args.summary_only:
-        rows = [
+        rows = skipped + [
             summarize_row(v, s, p, log_root, ckpt_root)
             for v, s, p in configs
         ]
@@ -987,7 +1204,7 @@ def main() -> int:
     for t in threads:
         t.join()
 
-    write_outputs(rows, out_csv, out_md)
+    write_outputs(skipped + rows, out_csv, out_md)
     print(f"Wrote {out_csv}, {out_md}, {out_csv.with_name(out_csv.stem + '_summary.csv')}")
     if args.show_errors:
         show_failed_errors(rows)

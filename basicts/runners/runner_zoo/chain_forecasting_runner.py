@@ -125,7 +125,7 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
                 g_weights = g_weights + [g_weights[-1]] * (len(graph_stage_preds) - len(g_weights))
             g_weights = g_weights[: len(graph_stage_preds)]
             for pred, weight in zip(graph_stage_preds, g_weights):
-                if pred is final_pred:
+                if len(graph_stage_preds) > 1 and pred is final_pred:
                     continue
                 loss = loss + self._weighted_loss(pred, final_target, weight)
 

@@ -1,12 +1,12 @@
-2026-07-09 13:22:07,936 - easytorch-launcher - INFO - Launching EasyTorch training.
-2026-07-09 13:22:08,935 - easytorch-env - INFO - Use devices 0.
-2026-07-09 13:22:08,963 - easytorch-launcher - INFO - Initializing runner "<class 'basicts.runners.runner_zoo.chain_forecasting_runner.ChainForecastingRunner'>"
-2026-07-09 13:22:08,963 - easytorch-env - INFO - Disable TF32 mode
-2026-07-09 13:22:08,965 - easytorch - INFO - Set ckpt save dir: 'checkpoints/graph_resolution_pems04/GR0_default/seed1/e8f0eb1180a3f4f4161b770bae8ab174'
-2026-07-09 13:22:08,965 - easytorch - INFO - Building model.
-2026-07-09 13:22:09,142 - easytorch-training - INFO - Initializing training.
-2026-07-09 13:22:09,142 - easytorch-training - INFO - Building training data loader.
-2026-07-09 13:22:09,270 - easytorch-training - INFO - Set optim: Adam (
+2026-07-09 15:05:15,175 - easytorch-launcher - INFO - Launching EasyTorch training.
+2026-07-09 15:05:16,208 - easytorch-env - INFO - Use devices 0.
+2026-07-09 15:05:16,233 - easytorch-launcher - INFO - Initializing runner "<class 'basicts.runners.runner_zoo.chain_forecasting_runner.ChainForecastingRunner'>"
+2026-07-09 15:05:16,233 - easytorch-env - INFO - Disable TF32 mode
+2026-07-09 15:05:16,235 - easytorch - INFO - Set ckpt save dir: 'checkpoints/graph_resolution_pems04/GR0_default/seed1/e8f0eb1180a3f4f4161b770bae8ab174'
+2026-07-09 15:05:16,235 - easytorch - INFO - Building model.
+2026-07-09 15:05:16,541 - easytorch-training - INFO - Initializing training.
+2026-07-09 15:05:16,541 - easytorch-training - INFO - Building training data loader.
+2026-07-09 15:05:16,671 - easytorch-training - INFO - Set optim: Adam (
 Parameter Group 0
     amsgrad: False
     betas: (0.9, 0.999)
@@ -20,12 +20,12 @@ Parameter Group 0
     maximize: False
     weight_decay: 0.0001
 )
-2026-07-09 13:22:09,270 - easytorch-training - INFO - Set lr_scheduler: <torch.optim.lr_scheduler.MultiStepLR object at 0x71dfeaf94be0>
-2026-07-09 13:22:09,270 - easytorch-training - INFO - Loading Checkpoint from 'checkpoints/graph_resolution_pems04/GR0_default/seed1/e8f0eb1180a3f4f4161b770bae8ab174/ChainForecasting_100.pt'
-2026-07-09 13:22:09,456 - easytorch-training - INFO - Resume training
-2026-07-09 13:22:09,457 - easytorch-training - INFO - Initializing validation.
-2026-07-09 13:22:09,457 - easytorch-training - INFO - Building val data loader.
-2026-07-09 13:22:09,805 - easytorch-training - INFO - The training finished at 2026-07-09 13:22:09
+2026-07-09 15:05:16,672 - easytorch-training - INFO - Set lr_scheduler: <torch.optim.lr_scheduler.MultiStepLR object at 0x794815ed42e0>
+2026-07-09 15:05:16,672 - easytorch-training - INFO - Loading Checkpoint from 'checkpoints/graph_resolution_pems04/GR0_default/seed1/e8f0eb1180a3f4f4161b770bae8ab174/ChainForecasting_100.pt'
+2026-07-09 15:05:16,812 - easytorch-training - INFO - Resume training
+2026-07-09 15:05:16,814 - easytorch-training - INFO - Initializing validation.
+2026-07-09 15:05:16,814 - easytorch-training - INFO - Building val data loader.
+2026-07-09 15:05:17,159 - easytorch-training - INFO - The training finished at 2026-07-09 15:05:17
 DESCRIPTION: Graph Resolution ablation: GR0_default seed1
 RUNNER: <class 'basicts.runners.runner_zoo.chain_forecasting_runner.ChainForecastingRunner'>
 DATASET_CLS: <class 'basicts.data.dataset.TimeSeriesForecastingDataset'>

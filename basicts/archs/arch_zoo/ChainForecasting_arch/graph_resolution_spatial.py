@@ -41,6 +41,13 @@ class GraphResolutionSpatialStack(nn.Module):
         clustering_seed: int = 0,
         dataset_name: str = "unknown",
         cluster_cache_dir: str | Path | None = None,
+        graph_cluster_method: str = "current",
+        cluster_train_series_path: str | Path | None = None,
+        cluster_spatial_coord_path: str | Path | None = None,
+        cluster_max_lag: int = 12,
+        cluster_lambda_s: float = 0.2,
+        cluster_acf_lag: int = 24,
+        data_dir: str | Path | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -51,6 +58,13 @@ class GraphResolutionSpatialStack(nn.Module):
         self.dataset_name = dataset_name
         self.clustering_seed = int(clustering_seed)
         self.cluster_cache_dir = cluster_cache_dir
+        self.graph_cluster_method = str(graph_cluster_method).lower()
+        self.cluster_train_series_path = cluster_train_series_path
+        self.cluster_spatial_coord_path = cluster_spatial_coord_path
+        self.cluster_max_lag = int(cluster_max_lag)
+        self.cluster_lambda_s = float(cluster_lambda_s)
+        self.cluster_acf_lag = int(cluster_acf_lag)
+        self.data_dir = data_dir
 
         ratios = list(graph_resolution_ratios or [0.25, 0.50, 1.00])
         self.graph_resolution_ratios = ratios
@@ -84,6 +98,13 @@ class GraphResolutionSpatialStack(nn.Module):
                     seed=clustering_seed,
                     dataset_name=dataset_name,
                     cache_dir=cluster_cache_dir,
+                    graph_cluster_method=self.graph_cluster_method,
+                    cluster_train_series_path=self.cluster_train_series_path,
+                    cluster_spatial_coord_path=self.cluster_spatial_coord_path,
+                    cluster_max_lag=self.cluster_max_lag,
+                    cluster_lambda_s=self.cluster_lambda_s,
+                    cluster_acf_lag=self.cluster_acf_lag,
+                    data_dir=self.data_dir,
                 )
                 self.cluster_meta.append(meta)
                 self.cluster_cache_paths.append(str(cache_path))
@@ -229,4 +250,5 @@ class GraphResolutionSpatialStack(nn.Module):
             "graph_resolution_alphas": self.graph_resolution_alphas,
             "graph_resolution_topks": self.graph_resolution_topks,
             "graph_resolution_betas": self.graph_resolution_betas,
+            "graph_cluster_method": self.graph_cluster_method,
         }

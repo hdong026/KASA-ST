@@ -134,7 +134,7 @@ class ABCDSpatialModule(nn.Module):
             self.use_gcn = False
             self.use_lightweight_spatial = False
 
-        if self.spatial_scheme in {"A", "B", "C", "D"}:
+        if self.post_spatial_mode != "adaptive_multiscale_only" and self.spatial_scheme in {"A", "B", "C", "D"}:
             self.use_gcn = self.spatial_scheme in {"A", "C"}
             self.use_dynamic_spatial = self.spatial_scheme in {"B", "C"}
             self.use_adaptive_adj = self.spatial_scheme in {"C"}

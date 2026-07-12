@@ -1,0 +1,12 @@
+[start] GR13_autocorr_feature_pam seed=1 gpu=0
+[start] GR10_xcorr_balanced_pam seed=1 gpu=1
+[skip] GR7_sparse_topk seed=1 mae=18.1088
+[done]  GR10_xcorr_balanced_pam seed=1 status=ok mae=18.1563
+[start] GR12_pearson_standard_pam seed=1 gpu=1
+[done]  GR13_autocorr_feature_pam seed=1 status=ok mae=18.1278
+[start] GR11_joint_pearson_spatial_pam seed=1 gpu=0
+[done]  GR12_pearson_standard_pam seed=1 status=ok mae=18.1526
+[start] GR9_pearson_balanced_pam seed=1 gpu=1
+[done]  GR11_joint_pearson_spatial_pam seed=1 status=ok mae=18.1213
+[done]  GR9_pearson_balanced_pam seed=1 status=ok mae=18.1394
+Wrote /home/dhz/KASA-ST/results/pems04_gr_cluster_matrix_seed1.csv, /home/dhz/KASA-ST/results/pems04_gr_cluster_matrix_seed1.md, /home/dhz/KASA-ST/results/pems04_gr_cluster_matrix_seed1_summary.csv
