@@ -1,0 +1,231 @@
+2026-07-12 16:58:38,267 - easytorch-launcher - INFO - Launching EasyTorch training.
+2026-07-12 16:58:39,297 - easytorch-env - INFO - Use devices 0.
+2026-07-12 16:58:39,323 - easytorch-launcher - INFO - Initializing runner "<class 'basicts.runners.runner_zoo.chain_forecasting_runner.ChainForecastingRunner'>"
+2026-07-12 16:58:39,324 - easytorch-env - INFO - Disable TF32 mode
+2026-07-12 16:58:39,325 - easytorch - INFO - Set ckpt save dir: 'checkpoints/pems04_long_horizon_graph/h16/GR7_sparse_topk/seed1/c2f5a1359458b85f79a3b5fa4c5dcdd9'
+2026-07-12 16:58:39,325 - easytorch - INFO - Building model.
+2026-07-12 16:58:39,585 - easytorch-training - INFO - Initializing training.
+2026-07-12 16:58:39,585 - easytorch-training - INFO - Building training data loader.
+2026-07-12 16:58:39,723 - easytorch-training - INFO - Set optim: Adam (
+Parameter Group 0
+    amsgrad: False
+    betas: (0.9, 0.999)
+    capturable: False
+    decoupled_weight_decay: False
+    differentiable: False
+    eps: 1e-08
+    foreach: None
+    fused: None
+    lr: 0.002
+    maximize: False
+    weight_decay: 0.0001
+)
+2026-07-12 16:58:39,723 - easytorch-training - INFO - Set lr_scheduler: <torch.optim.lr_scheduler.MultiStepLR object at 0x7991a476eac0>
+2026-07-12 16:58:39,724 - easytorch-training - INFO - Initializing validation.
+2026-07-12 16:58:39,724 - easytorch-training - INFO - Building val data loader.
+2026-07-12 16:58:39,991 - easytorch-training - INFO - Epoch 1 / 100
+DESCRIPTION: PeMS04 long horizon h16: GR7_sparse_topk seed1
+RUNNER: <class 'basicts.runners.runner_zoo.chain_forecasting_runner.ChainForecastingRunner'>
+DATASET_CLS: <class 'basicts.data.dataset.TimeSeriesForecastingDataset'>
+DATASET_NAME: PEMS04
+DATASET_TYPE: Traffic flow
+DATASET_INPUT_LEN: 16
+DATASET_OUTPUT_LEN: 16
+GPU_NUM: 1
+ENV:
+  SEED: 1
+  CUDNN:
+    ENABLED: True
+MODEL:
+  NAME: ChainForecasting
+  ARCH: <class 'basicts.archs.arch_zoo.ChainForecasting_arch.ChainForecasting_arch.ChainForecasting'>
+  PARAM:
+    node_size: 307
+    input_len: 16
+    output_len: 16
+    input_dim: 4
+    main_input_dim: 3
+    patch_len: 3
+    stride: 4
+    td_size: 288
+    dw_size: 7
+    d_td: 32
+    d_dw: 32
+    d_d: 32
+    d_spa: 32
+    if_time_in_day: True
+    if_day_in_week: True
+    if_spatial: True
+    num_layer: 2
+    spatial_scheme: C
+    adj_mx_path: datasets/PEMS04/adj_mx.pkl
+    use_gcn: True
+    gcn_hidden_dim: 64
+    use_dynamic_spatial: True
+    dyn_hidden_dim: 64
+    dyn_topk: 20
+    dyn_tau: 0.5
+    dyn_static_weight: 0.2
+    use_adaptive_adj: True
+    adp_hidden_dim: 32
+    adp_topk: 20
+    adp_tau: 0.5
+    use_hybrid_graph: True
+    hybrid_alpha: 0.2
+    use_patch_branch: True
+    use_downsample_branch: True
+    use_linear_residual_branch: True
+    patch_embedding_mode: serial_concat
+    patch_data_input_mode: all
+    post_spatial_mode: adaptive_only
+    spatial_placement: temporal_first_graph_resolution
+    use_pre_temporal_spatial_enhancement: False
+    keep_output_prior_residual: False
+    use_input_prior_enhancement: False
+    use_graph_spectral_calibration: False
+    use_extra_prior_input: False
+    use_prev_condition: True
+    chain_lengths: [4, 8, 16]
+    chain_loss_weights: [0.2, 0.3, 1.0]
+    graph_resolution_ratios: [0.25, 0.5, 1.0]
+    graph_resolution_alphas: [0.03, 0.06, 0.1]
+    graph_resolution_topks: [4, 8, 16]
+    graph_resolution_betas: [1.0, 1.0, 1.0]
+    graph_resolution_rhos: [0.25, 0.5, 1.0]
+    clustering_seed: 0
+    dataset_name: PEMS04
+    graph_cluster_method: current
+  FORWARD_FEATURES: [0, 1, 2, 3]
+  TARGET_FEATURES: [0]
+TRAIN:
+  LOSS: masked_mae
+  OPTIM:
+    TYPE: Adam
+    PARAM:
+      lr: 0.002
+      weight_decay: 0.0001
+  LR_SCHEDULER:
+    TYPE: MultiStepLR
+    PARAM:
+      milestones: [1, 35, 60, 80, 95]
+      gamma: 0.5
+  NUM_EPOCHS: 100
+  CKPT_SAVE_DIR: checkpoints/pems04_long_horizon_graph/h16/GR7_sparse_topk/seed1
+  DATA:
+    DIR: datasets/PEMS04
+    BATCH_SIZE: 32
+    PREFETCH: False
+    SHUFFLE: True
+    NUM_WORKERS: 2
+    PIN_MEMORY: False
+  NULL_VAL: 0.0
+VAL:
+  INTERVAL: 1
+  DATA:
+    DIR: datasets/PEMS04
+    BATCH_SIZE: 32
+    PREFETCH: False
+    SHUFFLE: False
+    NUM_WORKERS: 2
+    PIN_MEMORY: False
+TEST:
+  INTERVAL: 1
+  DATA:
+    DIR: datasets/PEMS04
+    BATCH_SIZE: 32
+    PREFETCH: False
+    SHUFFLE: False
+    NUM_WORKERS: 2
+    PIN_MEMORY: False
+
+train len: 10177
+val len: 3392
+test len: 3392
+  0%|          | 0/319 [00:00<?, ?it/s]  0%|          | 0/319 [00:00<?, ?it/s]
+2026-07-12 16:58:40,362 - easytorch-training - ERROR - Traceback (most recent call last):
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 31, in training_func
+    runner.train(cfg)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/core/runner.py", line 339, in train
+    loss = self.train_iters(epoch, iter_index, data)
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 86, in train_iters
+    forward_return = list(self.forward(data=data, epoch=epoch, iter_num=iter_num, train=True))
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 45, in forward
+    out = self.model(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 607, in forward
+    else self._forward_chain(history_data)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 493, in _forward_chain
+    t_k = step(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/kasa_temporal_step.py", line 220, in forward
+    patch_encoder(patch_input, spatial_codebook=spatial_codebook)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/patch_emb.py", line 251, in forward
+    predict = self.projection1(hidden)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/conv.py", line 548, in forward
+    return self._conv_forward(input, self.weight, self.bias)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/conv.py", line 543, in _conv_forward
+    return F.conv2d(
+RuntimeError: Given groups=1, weight of size [4, 832, 1, 1], expected input[32, 1024, 307, 1] to have 832 channels, but got 1024 channels instead
+
+Traceback (most recent call last):
+  File "/home/dhz/KASA-ST/examples/run.py", line 88, in <module>
+    main()
+  File "/home/dhz/KASA-ST/examples/run.py", line 84, in main
+    launch_training(args.cfg, devices)
+  File "/home/dhz/KASA-ST/basicts/launcher.py", line 23, in launch_training
+    easytorch.launch_training(cfg=cfg, devices=gpus, node_rank=node_rank)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 86, in launch_training
+    train_dist(cfg)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 35, in training_func
+    raise e
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 31, in training_func
+    runner.train(cfg)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/core/runner.py", line 339, in train
+    loss = self.train_iters(epoch, iter_index, data)
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 86, in train_iters
+    forward_return = list(self.forward(data=data, epoch=epoch, iter_num=iter_num, train=True))
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 45, in forward
+    out = self.model(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 607, in forward
+    else self._forward_chain(history_data)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 493, in _forward_chain
+    t_k = step(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/kasa_temporal_step.py", line 220, in forward
+    patch_encoder(patch_input, spatial_codebook=spatial_codebook)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/patch_emb.py", line 251, in forward
+    predict = self.projection1(hidden)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/conv.py", line 548, in forward
+    return self._conv_forward(input, self.weight, self.bias)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/conv.py", line 543, in _conv_forward
+    return F.conv2d(
+RuntimeError: Given groups=1, weight of size [4, 832, 1, 1], expected input[32, 1024, 307, 1] to have 832 channels, but got 1024 channels instead

@@ -612,13 +612,21 @@ class ChainForecasting(nn.Module):
                 "pred": y_final,
                 "chain_preds": chain_preds,
                 "temporal_preds": temporal_preds,
+                "temporal_stage_preds": temporal_preds,
                 "spatial_preds": spatial_preds,
                 "spatial_stage_preds": spatial_stage_preds,
                 "final_temporal_pred": temporal_preds[-1] if temporal_preds else y_final,
+                "chain_lengths": list(self.chain_lengths),
                 "spatial_organization_type": self.spatial_organization_type,
             }
             if self._last_graph_diagnostics is not None:
                 result["graph_resolution_diagnostics"] = self._last_graph_diagnostics
+                diag = self._last_graph_diagnostics
+                result["graph_node_stage_preds"] = diag.get("node_stage_preds")
+                result["graph_cluster_residuals"] = diag.get("cluster_residuals")
+                result["graph_lifted_residuals"] = diag.get("lifted_residuals")
+                result["graph_projection_matrices"] = diag.get("graph_projection_matrices")
+                result["graph_ratios"] = diag.get("graph_ratios")
                 if self.graph_resolution_stack is not None:
                     result["graph_resolution_metadata"] = self.graph_resolution_stack.metadata()
             result.update(self._collect_adaptive_ms_diagnostics())

@@ -182,9 +182,11 @@ class GraphResolutionSpatialStack(nn.Module):
     ) -> torch.Tensor | dict[str, Any]:
         u_node = forecast
         node_stage_preds: list[torch.Tensor] = [u_node]
+        node_before_preds: list[torch.Tensor] = []
         cluster_stage_preds: list[torch.Tensor] = []
         cluster_residuals: list[torch.Tensor] = []
         lifted_residuals: list[torch.Tensor] = []
+        projection_matrices: list[torch.Tensor] = []
         residual_energy_cluster: list[float] = []
         residual_energy_lifted: list[float] = []
 
@@ -193,6 +195,8 @@ class GraphResolutionSpatialStack(nn.Module):
             beta = float(self.graph_resolution_betas[stage_idx])
             c = getattr(self, f"stage{stage_idx}_C")
             p = getattr(self, f"stage{stage_idx}_P")
+            projection_matrices.append(p)
+            node_before_preds.append(u_node)
 
             if m_j < self.node_size:
                 u_cluster = self._project_nodes(u_node, p)
@@ -224,10 +228,15 @@ class GraphResolutionSpatialStack(nn.Module):
 
         return {
             "pred": u_node,
+            "temporal_input": forecast,
             "node_stage_preds": node_stage_preds[1:],
+            "node_stage_preds_all": node_stage_preds,
+            "node_before_preds": node_before_preds,
             "cluster_stage_preds": cluster_stage_preds,
             "cluster_residuals": cluster_residuals,
             "lifted_residuals": lifted_residuals,
+            "graph_projection_matrices": projection_matrices,
+            "graph_ratios": list(self.graph_resolution_ratios),
             "residual_energy_cluster": residual_energy_cluster,
             "residual_energy_lifted": residual_energy_lifted,
             "graph_resolution_sizes": list(self.graph_resolution_sizes),
