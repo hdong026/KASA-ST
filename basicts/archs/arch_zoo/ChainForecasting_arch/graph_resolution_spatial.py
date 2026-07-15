@@ -9,7 +9,10 @@ from torch import nn
 
 from basicts.archs.arch_zoo.ChainForecasting_arch.gcn import ABCDSpatialModule
 from basicts.archs.arch_zoo.ChainForecasting_arch.graph_cluster_utils import (
+    CAPACITY_MULTILEVEL_METHODS,
     load_or_build_cluster_assignment,
+    load_or_build_multilevel_cluster_assignments,
+    resolve_graph_resolution_capacities,
     resolve_graph_resolution_sizes,
 )
 
@@ -32,6 +35,7 @@ class GraphResolutionSpatialStack(nn.Module):
         adj_mx_path: str | None,
         post_spatial_mode: str,
         graph_resolution_ratios: list[float] | None = None,
+        graph_resolution_capacities: list[int] | None = None,
         graph_resolution_alphas: list[float] | None = None,
         graph_resolution_topks: list[int] | None = None,
         graph_resolution_betas: list[float] | None = None,
@@ -44,6 +48,11 @@ class GraphResolutionSpatialStack(nn.Module):
         graph_cluster_method: str = "current",
         cluster_train_series_path: str | Path | None = None,
         cluster_spatial_coord_path: str | Path | None = None,
+        cluster_road_distance_path: str | Path | None = None,
+        cluster_sigma_d: float = 0.5,
+        cluster_road_delta: float | None = None,
+        cluster_delta_4: float = 0.8,
+        cluster_delta_2: float = 0.5,
         cluster_max_lag: int = 12,
         cluster_lambda_s: float = 0.2,
         cluster_acf_lag: int = 24,
@@ -61,14 +70,57 @@ class GraphResolutionSpatialStack(nn.Module):
         self.graph_cluster_method = str(graph_cluster_method).lower()
         self.cluster_train_series_path = cluster_train_series_path
         self.cluster_spatial_coord_path = cluster_spatial_coord_path
+        self.cluster_road_distance_path = cluster_road_distance_path
+        self.cluster_sigma_d = float(cluster_sigma_d)
+        self.cluster_road_delta = cluster_road_delta
+        self.cluster_delta_4 = float(cluster_delta_4)
+        self.cluster_delta_2 = float(cluster_delta_2)
         self.cluster_max_lag = int(cluster_max_lag)
         self.cluster_lambda_s = float(cluster_lambda_s)
         self.cluster_acf_lag = int(cluster_acf_lag)
         self.data_dir = data_dir
 
         ratios = list(graph_resolution_ratios or [0.25, 0.50, 1.00])
+        capacities = list(graph_resolution_capacities or [])
         self.graph_resolution_ratios = ratios
-        self.graph_resolution_sizes = resolve_graph_resolution_sizes(self.node_size, ratios)
+        self.graph_resolution_capacities = capacities
+        self.use_capacity_schedule = (
+            self.graph_cluster_method in CAPACITY_MULTILEVEL_METHODS or bool(capacities)
+        )
+
+        if self.use_capacity_schedule:
+            cap_schedule = resolve_graph_resolution_capacities(
+                capacities or [4, 2, 1]
+            )
+            self.graph_resolution_capacities = cap_schedule
+            self.graph_resolution_sizes: list[int] = []
+            self._stage_metas: list[dict[str, Any]] = []
+            stage_bundle, multilevel_cache = load_or_build_multilevel_cluster_assignments(
+                node_size=self.node_size,
+                capacities=cap_schedule,
+                adj_mx_path=adj_mx_path,
+                seed=clustering_seed,
+                dataset_name=dataset_name,
+                cache_dir=cluster_cache_dir,
+                graph_cluster_method=self.graph_cluster_method,
+                cluster_road_distance_path=self.cluster_road_distance_path,
+                cluster_sigma_d=self.cluster_sigma_d,
+                cluster_road_delta=self.cluster_road_delta,
+            )
+            self._multilevel_cache_path = str(multilevel_cache)
+            self._stage_metas = stage_bundle
+            self.graph_resolution_sizes = [int(st["num_clusters"]) for st in stage_bundle]
+            print(
+                f"[GraphResolution] method={self.graph_cluster_method} "
+                f"capacities={cap_schedule} sizes={self.graph_resolution_sizes} "
+                f"road_used={stage_bundle[0].get('road_distance_used', False)} "
+                f"nested={stage_bundle[0].get('nested_consistency')} "
+                f"cache={multilevel_cache}"
+            )
+        else:
+            self.graph_resolution_sizes = resolve_graph_resolution_sizes(self.node_size, ratios)
+            self._stage_metas = []
+            self._multilevel_cache_path = ""
 
         alphas = list(graph_resolution_alphas or [0.03, 0.06, 0.10])
         topks = list(graph_resolution_topks or [8, 16, 32])
@@ -91,21 +143,39 @@ class GraphResolutionSpatialStack(nn.Module):
             topk = int(self.graph_resolution_topks[stage_idx])
 
             if m_j < self.node_size:
-                meta, cache_path = load_or_build_cluster_assignment(
-                    node_size=self.node_size,
-                    num_clusters=m_j,
-                    adj_mx_path=adj_mx_path,
-                    seed=clustering_seed,
-                    dataset_name=dataset_name,
-                    cache_dir=cluster_cache_dir,
-                    graph_cluster_method=self.graph_cluster_method,
-                    cluster_train_series_path=self.cluster_train_series_path,
-                    cluster_spatial_coord_path=self.cluster_spatial_coord_path,
-                    cluster_max_lag=self.cluster_max_lag,
-                    cluster_lambda_s=self.cluster_lambda_s,
-                    cluster_acf_lag=self.cluster_acf_lag,
-                    data_dir=self.data_dir,
-                )
+                if self.use_capacity_schedule:
+                    meta = dict(self._stage_metas[stage_idx])
+                    cache_path = Path(self._multilevel_cache_path)
+                else:
+                    stage_ratio = float(ratios[stage_idx]) if stage_idx < len(ratios) else 1.0
+                    meta, cache_path = load_or_build_cluster_assignment(
+                        node_size=self.node_size,
+                        num_clusters=m_j,
+                        adj_mx_path=adj_mx_path,
+                        seed=clustering_seed,
+                        dataset_name=dataset_name,
+                        cache_dir=cluster_cache_dir,
+                        graph_cluster_method=self.graph_cluster_method,
+                        cluster_train_series_path=self.cluster_train_series_path,
+                        cluster_spatial_coord_path=self.cluster_spatial_coord_path,
+                        cluster_road_distance_path=self.cluster_road_distance_path,
+                        cluster_sigma_d=self.cluster_sigma_d,
+                        cluster_road_delta=self.cluster_road_delta,
+                        cluster_delta_4=self.cluster_delta_4,
+                        cluster_delta_2=self.cluster_delta_2,
+                        ratio=stage_ratio,
+                        cluster_max_lag=self.cluster_max_lag,
+                        cluster_lambda_s=self.cluster_lambda_s,
+                        cluster_acf_lag=self.cluster_acf_lag,
+                        data_dir=self.data_dir,
+                    )
+                    val = meta.get("validation") or {}
+                    print(
+                        f"[GraphResolution] stage={stage_idx} method={self.graph_cluster_method} "
+                        f"M={m_j} max_size={val.get('max_cluster_size')} "
+                        f"road={meta.get('distance_summary', {}).get('road_distance_used')} "
+                        f"cache={cache_path}"
+                    )
                 self.cluster_meta.append(meta)
                 self.cluster_cache_paths.append(str(cache_path))
                 self.register_buffer(f"stage{stage_idx}_C", torch.from_numpy(meta["C"]))
@@ -252,6 +322,7 @@ class GraphResolutionSpatialStack(nn.Module):
     def metadata(self) -> dict[str, Any]:
         return {
             "graph_resolution_ratios": self.graph_resolution_ratios,
+            "graph_resolution_capacities": self.graph_resolution_capacities,
             "graph_resolution_sizes": self.graph_resolution_sizes,
             "clustering_methods": [m.get("clustering_method", "") for m in self.cluster_meta],
             "cluster_cache_paths": self.cluster_cache_paths,
@@ -260,4 +331,7 @@ class GraphResolutionSpatialStack(nn.Module):
             "graph_resolution_topks": self.graph_resolution_topks,
             "graph_resolution_betas": self.graph_resolution_betas,
             "graph_cluster_method": self.graph_cluster_method,
+            "cluster_road_distance_path": self.cluster_road_distance_path,
+            "cluster_sigma_d": self.cluster_sigma_d,
+            "multilevel_cache_path": getattr(self, "_multilevel_cache_path", ""),
         }

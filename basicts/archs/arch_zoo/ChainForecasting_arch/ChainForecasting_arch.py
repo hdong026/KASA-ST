@@ -263,6 +263,7 @@ class ChainForecasting(nn.Module):
                 adj_mx_path=model_args.get("adj_mx_path"),
                 post_spatial_mode=self.post_spatial_mode,
                 graph_resolution_ratios=self.graph_resolution_ratios,
+                graph_resolution_capacities=model_args.get("graph_resolution_capacities"),
                 graph_resolution_alphas=model_args.get(
                     "graph_resolution_alphas", [0.03, 0.06, 0.10]
                 ),
@@ -283,6 +284,11 @@ class ChainForecasting(nn.Module):
                 graph_cluster_method=model_args.get("graph_cluster_method", "current"),
                 cluster_train_series_path=model_args.get("cluster_train_series_path"),
                 cluster_spatial_coord_path=model_args.get("cluster_spatial_coord_path"),
+                cluster_road_distance_path=model_args.get("cluster_road_distance_path"),
+                cluster_sigma_d=model_args.get("cluster_sigma_d", 0.5),
+                cluster_road_delta=model_args.get("cluster_road_delta"),
+                cluster_delta_4=model_args.get("cluster_delta_4", 0.8),
+                cluster_delta_2=model_args.get("cluster_delta_2", 0.5),
                 cluster_max_lag=model_args.get("cluster_max_lag", 12),
                 cluster_lambda_s=model_args.get("cluster_lambda_s", 0.2),
                 cluster_acf_lag=model_args.get("cluster_acf_lag", 24),

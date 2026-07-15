@@ -61,13 +61,20 @@ HORIZON_CONFIGS: dict[int, dict[str, Any]] = {
     },
 }
 
-GRAPH_RES_KEYS = (
-    "graph_resolution_ratios",
+GRAPH_RES_COMMON_KEYS = (
     "graph_resolution_alphas",
     "graph_resolution_topks",
     "graph_resolution_betas",
     "graph_resolution_rhos",
+    "graph_cluster_method",
+    "cluster_road_distance_path",
+    "cluster_sigma_d",
+    "cluster_delta_4",
+    "cluster_delta_2",
 )
+
+GRAPH_RES_RATIO_KEYS = ("graph_resolution_ratios",) + GRAPH_RES_COMMON_KEYS
+GRAPH_RES_CAPACITY_KEYS = ("graph_resolution_capacities",) + GRAPH_RES_COMMON_KEYS
 
 GR7_SPARSE_BASE: dict[str, Any] = {
     "spatial_placement": "temporal_first_graph_resolution",
@@ -80,6 +87,10 @@ GR7_SPARSE_BASE: dict[str, Any] = {
     "clustering_seed": 0,
     "dataset_name": "PEMS04",
     "graph_cluster_method": "current",
+    "cluster_road_distance_path": "datasets/raw_data/PEMS04/adj_PEMS04_distance.pkl",
+    "cluster_sigma_d": 0.5,
+    "cluster_delta_4": 0.8,
+    "cluster_delta_2": 0.5,
 }
 
 COMMON_FIXED: dict[str, Any] = {
@@ -168,6 +179,33 @@ VARIANT_SPECS: dict[str, dict[str, Any]] = {
         "graph_resolution_rhos": [0.50, 1.00],
         **UNIFIED_AUX_GR7,
         "unified_aux_loss_mode": "unified_residual_detach",
+    },
+    "GR17_road_spectral": {
+        **GR7_SPARSE_BASE,
+        "graph_cluster_method": "gr17_road_spectral",
+        "unified_aux_loss_mode": "none",
+    },
+    "GR18_constrained_spectral_cap_dist": {
+        **GR7_SPARSE_BASE,
+        "graph_cluster_method": "gr18_constrained_spectral_cap_dist",
+        "unified_aux_loss_mode": "none",
+    },
+    "GR19_spectral_constrained_kmeans_cap": {
+        **GR7_SPARSE_BASE,
+        "graph_cluster_method": "gr19_spectral_constrained_kmeans_cap",
+        "unified_aux_loss_mode": "none",
+    },
+    "GR20_graclus_matching_4_2_1": {
+        **GR7_SPARSE_BASE,
+        "graph_resolution_capacities": [4, 2, 1],
+        "graph_cluster_method": "gr20_graclus_matching_4_2_1",
+        "unified_aux_loss_mode": "none",
+    },
+    "GR21_road_graclus_matching_4_2_1": {
+        **GR7_SPARSE_BASE,
+        "graph_resolution_capacities": [4, 2, 1],
+        "graph_cluster_method": "gr21_road_graclus_matching_4_2_1",
+        "unified_aux_loss_mode": "none",
     },
 }
 
@@ -335,15 +373,29 @@ def validate_generated_config(cfg_path: Path, horizon: int, variant: str) -> Non
         if bool(param.get("aux_include_spatial_final", False)):
             raise ValueError(f"{cfg_path}: aux_include_spatial_final must be False")
     if placement == "temporal_first_graph_resolution":
+        res_keys = (
+            GRAPH_RES_CAPACITY_KEYS
+            if "graph_resolution_capacities" in spec
+            else GRAPH_RES_RATIO_KEYS
+        )
+        list_keys = (
+            "graph_resolution_ratios",
+            "graph_resolution_capacities",
+            "graph_resolution_alphas",
+            "graph_resolution_topks",
+            "graph_resolution_betas",
+            "graph_resolution_rhos",
+        )
         lengths = []
-        for key in GRAPH_RES_KEYS:
+        for key in res_keys:
             if key not in param:
                 raise ValueError(f"{cfg_path}: missing {key} for graph resolution variant")
-            lengths.append(len(list(param[key])))
-        if len(set(lengths)) != 1:
+            if key in list_keys:
+                lengths.append(len(list(param[key])))
+        if lengths and len(set(lengths)) != 1:
             raise ValueError(
                 f"{cfg_path}: graph_resolution_* lengths mismatch: "
-                f"{dict(zip(GRAPH_RES_KEYS, lengths))}"
+                f"{dict(zip(res_keys, lengths))}"
             )
         if "clustering_seed" not in param:
             raise ValueError(f"{cfg_path}: missing clustering_seed")
