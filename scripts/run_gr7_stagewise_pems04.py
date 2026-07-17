@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -25,7 +26,26 @@ DEFAULT_CKPT_ROOT = ROOT / "checkpoints" / "gr7_stagewise"
 DEFAULT_HORIZONS = [16, 32, 64]
 DEFAULT_SEEDS = [1]
 DEFAULT_GPUS = ["0"]
-DEFAULT_NUM_EPOCHS = 100
+
+STAGE_EPOCHS: dict[str, int] = {
+    "T1": 30,
+    "T2": 40,
+    "T3": 60,
+    "S14": 20,
+    "S12": 30,
+    "S1": 40,
+    "FT": 15,
+}
+
+STAGE_MILESTONES: dict[str, list[int]] = {
+    "T1": [1, 15, 25],
+    "T2": [1, 20, 32],
+    "T3": [1, 30, 48],
+    "S14": [1, 10, 16],
+    "S12": [1, 15, 25],
+    "S1": [1, 20, 32],
+    "FT": [1, 8, 12],
+}
 
 HORIZON_CONFIGS: dict[int, dict[str, Any]] = {
     16: {
@@ -61,8 +81,22 @@ GR7_STAGEWISE_PARAM: dict[str, Any] = {
     "graph_resolution_skip_final_identity": False,
     "unified_aux_loss_mode": "none",
     "spatial_graph_loss_weights": [0.0, 0.0, 0.0],
-    "chain_loss_weights": [0.2, 0.3, 1.0],
+    "use_extra_prior_input": False,
 }
+
+
+def dataset_num_channels(dataset_name: str = "PEMS04") -> int:
+    audit = ROOT / "datasets" / dataset_name / "protocol_audit.json"
+    if audit.is_file():
+        return int(json.loads(audit.read_text(encoding="utf-8"))["num_channels"])
+    return 3
+
+
+def resolve_input_channels(use_extra_prior: bool, num_channels: int) -> tuple[list[int], int]:
+    """No-prior experiments must not read channel 3 even on 4-channel datasets."""
+    if num_channels >= 4 and use_extra_prior:
+        return [0, 1, 2, 3], 4
+    return [0, 1, 2], 3
 
 
 def _py_literal(v: Any) -> str:
@@ -75,55 +109,74 @@ def _py_literal(v: Any) -> str:
     return str(v)
 
 
+def stage_num_epochs(stage: str, override: int | None) -> int:
+    if override is not None:
+        return int(override)
+    return STAGE_EPOCHS[str(stage).upper()]
+
+
 def generate_stage_config(
     horizon: int,
     stage: str,
     seed: int,
     work_dir: Path,
     ckpt_root: Path,
-    num_epochs: int,
+    num_epochs: int | None,
     freeze_previous: bool,
     detach_previous: bool,
     fine_tune_lr_scale: float,
     load_checkpoint: str | None,
     save_checkpoint: str | None,
 ) -> Path:
+    stage = str(stage).upper()
     hspec = HORIZON_CONFIGS[horizon]
     base_cfg = hspec["base_cfg"]
     content = base_cfg.read_text(encoding="utf-8")
+    epochs = stage_num_epochs(stage, num_epochs)
+    milestones = STAGE_MILESTONES[stage]
 
     if not load_checkpoint:
         load_checkpoint = resolve_load_checkpoint(stage, str(ckpt_root), horizon, seed)
     if not save_checkpoint:
         save_checkpoint = default_stage_ckpt_path(str(ckpt_root), horizon, seed, stage)
 
+    num_channels = dataset_num_channels(GR7_STAGEWISE_PARAM["dataset_name"])
+    use_prior = bool(GR7_STAGEWISE_PARAM.get("use_extra_prior_input", False))
+    forward_features, input_dim = resolve_input_channels(use_prior, num_channels)
+
     ckpt_rel = os.path.join("checkpoints", "gr7_stagewise", f"h{horizon}", stage, f"seed{seed}")
     lines = [
         "",
         "# ===== GR7_stagewise overrides (auto-generated) =====",
         f"CFG.ENV.SEED = {seed}",
-        f'CFG.TRAIN.NUM_EPOCHS = {num_epochs}',
+        f"CFG.TRAIN.NUM_EPOCHS = {epochs}",
         f'CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("{ckpt_rel}")',
         f'CFG.DESCRIPTION = "GR7_stagewise PeMS04 h{horizon} stage={stage} seed{seed}"',
-        f'CFG.MODEL.PARAM["variant_name"] = "GR7_stagewise"',
+        f'CFG.MODEL.FORWARD_FEATURES = {_py_literal(forward_features)}',
+        f'CFG.MODEL.PARAM["input_dim"] = {input_dim}',
+        f'CFG.MODEL.PARAM["main_input_dim"] = 3',
     ]
     for key, val in GR7_STAGEWISE_PARAM.items():
         lines.append(f'CFG.MODEL.PARAM["{key}"] = {_py_literal(val)}')
     lines.append(f'CFG.MODEL.PARAM["chain_lengths"] = {_py_literal(hspec["chain_lengths"])}')
+    lines.append('CFG.MODEL.PARAM["chain_loss_weights"] = [0.0, 0.0, 0.0]')
 
+    base_lr = 0.002
     if stage == "FT":
-        base_lr = 0.002
         lines.append(f'CFG.TRAIN.OPTIM.PARAM["lr"] = {base_lr * fine_tune_lr_scale}')
+    else:
+        lines.append(f'CFG.TRAIN.OPTIM.PARAM["lr"] = {base_lr}')
 
     lines.extend(
         [
+            f'CFG.TRAIN.LR_SCHEDULER.PARAM["milestones"] = {_py_literal(milestones)}',
             "CFG.TRAIN.STAGEWISE = EasyDict()",
             "CFG.TRAIN.STAGEWISE.enabled = True",
             f"CFG.TRAIN.STAGEWISE.stage = {_py_literal(stage)}",
             f"CFG.TRAIN.STAGEWISE.freeze_previous = {_py_literal(freeze_previous)}",
             f"CFG.TRAIN.STAGEWISE.detach_previous = {_py_literal(detach_previous)}",
             f"CFG.TRAIN.STAGEWISE.fine_tune_lr_scale = {fine_tune_lr_scale}",
-            f"CFG.TRAIN.STAGEWISE.variant_name = 'GR7_stagewise'",
+            "CFG.TRAIN.STAGEWISE.variant_name = 'GR7_stagewise'",
             f"CFG.TRAIN.STAGEWISE.ckpt_root = {_py_literal(str(ckpt_root))}",
             f"CFG.TRAIN.STAGEWISE.load_checkpoint = {_py_literal(load_checkpoint)}",
             f"CFG.TRAIN.STAGEWISE.save_checkpoint = {_py_literal(save_checkpoint)}",
@@ -146,7 +199,7 @@ def run_stage(
     gpu: str,
     work_dir: Path,
     ckpt_root: Path,
-    num_epochs: int,
+    num_epochs: int | None,
     freeze_previous: bool,
     detach_previous: bool,
     fine_tune_lr_scale: float,
@@ -171,7 +224,8 @@ def run_stage(
     cmd = [sys.executable, str(RUN_PY), "--cfg", str(rel_cfg), "--gpus", "0"]
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu)
-    print(f"\n=== GR7_stagewise h{horizon} stage={stage} seed={seed} GPU={gpu} ===")
+    epochs = stage_num_epochs(stage, num_epochs)
+    print(f"\n=== GR7_stagewise h{horizon} stage={stage} seed={seed} GPU={gpu} epochs={epochs} ===")
     print(f"config: {cfg_path}")
     print(f"load: {load_checkpoint or resolve_load_checkpoint(stage, str(ckpt_root), horizon, seed)}")
     print(f"save: {save_checkpoint or default_stage_ckpt_path(str(ckpt_root), horizon, seed, stage)}")
@@ -194,7 +248,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--freeze_previous", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--detach_previous", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--fine_tune_lr_scale", type=float, default=0.1)
-    p.add_argument("--num_epochs", type=int, default=DEFAULT_NUM_EPOCHS)
+    p.add_argument(
+        "--num_epochs",
+        type=int,
+        default=None,
+        help="Override per-stage default epochs (T1=30,T2=40,T3=60,S14=20,S12=30,S1=40,FT=15)",
+    )
     p.add_argument("--work_dir", type=Path, default=DEFAULT_WORK_DIR)
     p.add_argument("--ckpt_root", type=Path, default=DEFAULT_CKPT_ROOT)
     p.add_argument("--dry_run", action="store_true")

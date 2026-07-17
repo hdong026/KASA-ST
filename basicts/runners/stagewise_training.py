@@ -177,10 +177,13 @@ def compute_stagewise_loss(
             raise RuntimeError(f"Missing spatial diagnostics for stage {stage}")
 
         if stage == "S1":
-            r_n = lifted_residuals[stage_idx]
-            y_prev = node_before_preds[stage_idx]
-            target_r = real_value - y_prev.detach()
-            loss = raw_loss_fn(r_n, target_r)
+            if stage_idx < len(lifted_residuals) and lifted_residuals[stage_idx] is not None:
+                r_n = lifted_residuals[stage_idx]
+                y_prev = node_before_preds[stage_idx]
+                target_r = real_value - y_prev.detach()
+                loss = raw_loss_fn(r_n, target_r)
+            else:
+                loss = raw_loss_fn(out["pred"], real_value)
             parts["L_S1"] = float(loss.detach().item())
             return loss, parts
 

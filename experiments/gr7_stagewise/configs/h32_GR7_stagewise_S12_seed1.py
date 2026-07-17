@@ -141,10 +141,12 @@ CFG.TEST.DATA.PIN_MEMORY = False
 
 # ===== GR7_stagewise overrides (auto-generated) =====
 CFG.ENV.SEED = 1
-CFG.TRAIN.NUM_EPOCHS = 100
+CFG.TRAIN.NUM_EPOCHS = 30
 CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("checkpoints/gr7_stagewise/h32/S12/seed1")
 CFG.DESCRIPTION = "GR7_stagewise PeMS04 h32 stage=S12 seed1"
-CFG.MODEL.PARAM["variant_name"] = "GR7_stagewise"
+CFG.MODEL.FORWARD_FEATURES = [0, 1, 2]
+CFG.MODEL.PARAM["input_dim"] = 3
+CFG.MODEL.PARAM["main_input_dim"] = 3
 CFG.MODEL.PARAM["variant_name"] = 'GR7_stagewise'
 CFG.MODEL.PARAM["spatial_placement"] = 'temporal_first_graph_resolution'
 CFG.MODEL.PARAM["post_spatial_mode"] = 'adaptive_only'
@@ -163,8 +165,11 @@ CFG.MODEL.PARAM["cluster_delta_2"] = 0.5
 CFG.MODEL.PARAM["graph_resolution_skip_final_identity"] = False
 CFG.MODEL.PARAM["unified_aux_loss_mode"] = 'none'
 CFG.MODEL.PARAM["spatial_graph_loss_weights"] = [0.0, 0.0, 0.0]
-CFG.MODEL.PARAM["chain_loss_weights"] = [0.2, 0.3, 1.0]
+CFG.MODEL.PARAM["use_extra_prior_input"] = False
 CFG.MODEL.PARAM["chain_lengths"] = [8, 16, 32]
+CFG.MODEL.PARAM["chain_loss_weights"] = [0.0, 0.0, 0.0]
+CFG.TRAIN.OPTIM.PARAM["lr"] = 0.002
+CFG.TRAIN.LR_SCHEDULER.PARAM["milestones"] = [1, 15, 25]
 CFG.TRAIN.STAGEWISE = EasyDict()
 CFG.TRAIN.STAGEWISE.enabled = True
 CFG.TRAIN.STAGEWISE.stage = 'S12'

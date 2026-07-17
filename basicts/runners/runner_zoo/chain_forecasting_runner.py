@@ -80,7 +80,12 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         self._last_stagewise_loss_parts: dict[str, float] = {}
         self._reset_val_unified_diag()
 
-        sw = cfg.get("TRAIN", {}).get("STAGEWISE") or {}
+        train_cfg = cfg.get("TRAIN", {}) if hasattr(cfg, "get") else getattr(cfg, "TRAIN", {})
+        sw = getattr(train_cfg, "STAGEWISE", None) if train_cfg is not None else None
+        if sw is None and train_cfg is not None:
+            sw = train_cfg.get("STAGEWISE") if hasattr(train_cfg, "get") else {}
+        sw = sw or {}
+        self.train_num_epochs = int(train_cfg.get("NUM_EPOCHS", 100) if hasattr(train_cfg, "get") else 100)
         self.stagewise_enabled = bool(sw.get("enabled", False))
         self.stagewise_stage = str(sw.get("stage", "FT")).upper() if self.stagewise_enabled else None
         self.stagewise_freeze_previous = bool(sw.get("freeze_previous", True))
@@ -485,12 +490,6 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             freeze_previous=self.stagewise_freeze_previous,
         )
 
-        if stage == "FT":
-            scale = self.stagewise_fine_tune_lr_scale
-            if hasattr(self, "optim") and self.optim is not None:
-                for group in self.optim.param_groups:
-                    group["lr"] = float(group.get("lr", cfg["TRAIN"]["OPTIM"]["PARAM"]["lr"])) * scale
-
         info = self._stagewise_trainable_info
         self.logger.info(
             "[GR7_stagewise] variant=%s stage=%s horizon=%s chain_lengths=%s "
@@ -590,7 +589,7 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         if (
             self.stagewise_enabled
             and self.stagewise_save_checkpoint
-            and epoch >= int(self.cfg["TRAIN"]["NUM_EPOCHS"])
+            and epoch >= int(getattr(self, "num_epochs", self.train_num_epochs))
         ):
             import os
             from pathlib import Path
