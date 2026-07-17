@@ -1,0 +1,15 @@
+[skip] H=16 F=32: existing files OK, not overwriting.
+[skip] H=16 F=64: existing files OK, not overwriting.
+
+=== Protocol A data inspection ===
+F=32: train/val/test=10167/3389/3389 | history=(32, 16, 307, 4) future=(32, 32, 307, 4)
+     data : /home/dhz/KASA-ST/datasets/PEMS04/data_in16_out32.pkl
+     index: /home/dhz/KASA-ST/datasets/PEMS04/index_in16_out32.pkl
+     first=(0, 16, 48) last=(16944, 16960, 16992)
+F=64: train/val/test=10148/3383/3382 | history=(32, 16, 307, 4) future=(32, 64, 307, 4)
+     data : /home/dhz/KASA-ST/datasets/PEMS04/data_in16_out64.pkl
+     index: /home/dhz/KASA-ST/datasets/PEMS04/index_in16_out64.pkl
+     first=(0, 16, 80) last=(16912, 16928, 16992)
+
+Wrote inspection table: /home/dhz/KASA-ST/results/pems04_fixed_input_horizon_data_check.csv
+Note: windows are pre-generated index slices (BasicTS official 6:2:2 on window count). Existing in12_out12 is preserved; in12_out24/out48 are added alongside.

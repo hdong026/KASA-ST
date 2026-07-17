@@ -1,0 +1,147 @@
+import os
+import sys
+# Repo root (examples/baselines/<Model>/)
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+import torch
+from easydict import EasyDict
+from basicts.archs import D2STGNN
+from basicts.runners import SimpleTimeSeriesForecastingRunner
+from basicts.data import TimeSeriesForecastingDataset
+from basicts.losses import masked_mae
+from basicts.utils import load_adj
+
+
+CFG = EasyDict()
+
+# Source: GestaltCogTeam/BasicTS @ 7a7f970 (examples/*/*_PEMS04.py), 12->12 PeMS04
+# Data: datasets/PEMS04 official 6:2:2 split; FORWARD [0,1,2] (no ch3 prior)
+
+# ================= general ================= #
+CFG.DESCRIPTION = "D2STGNN model configuration"
+CFG.RUNNER = SimpleTimeSeriesForecastingRunner
+CFG.DATASET_CLS = TimeSeriesForecastingDataset
+CFG.DATASET_NAME = "PEMS04"
+CFG.DATASET_TYPE = "Traffic flow"
+CFG.DATASET_INPUT_LEN = 12
+CFG.DATASET_OUTPUT_LEN = 12
+CFG.GPU_NUM = 1
+CFG.NULL_VAL = 0.0
+
+# ================= environment ================= #
+CFG.ENV = EasyDict()
+CFG.ENV.SEED = 1
+CFG.ENV.CUDNN = EasyDict()
+CFG.ENV.CUDNN.ENABLED = True
+
+# ================= model ================= #
+CFG.MODEL = EasyDict()
+CFG.MODEL.NAME = "D2STGNN"
+CFG.MODEL.ARCH = D2STGNN
+adj_mx, _ = load_adj("datasets/" + CFG.DATASET_NAME +
+                     "/adj_mx.pkl", "doubletransition")
+CFG.MODEL.PARAM = {
+    "num_feat": 1,
+    "num_hidden": 32,
+    "dropout": 0.1,
+    "seq_length": 12,
+    "k_t": 3,
+    "k_s": 2,
+    "gap": 3,
+    "num_nodes": 307,
+    "adjs": [torch.tensor(adj) for adj in adj_mx],
+    "num_layers": 5,
+    "num_modalities": 2,
+    "node_hidden": 12,
+    "time_emb_dim": 12,
+    "time_in_day_size": 288,
+    "day_in_week_size": 7,
+}
+CFG.MODEL.FORWARD_FEATURES = [0, 1, 2]
+CFG.MODEL.TARGET_FEATURES = [0]
+
+# ================= optim ================= #
+CFG.TRAIN = EasyDict()
+CFG.TRAIN.NULL_VAL = 0.0
+CFG.TRAIN.LOSS = masked_mae
+CFG.TRAIN.OPTIM = EasyDict()
+CFG.TRAIN.OPTIM.TYPE = "Adam"
+CFG.TRAIN.OPTIM.PARAM = {
+    "lr": 0.002,
+    "weight_decay": 1.0e-5,
+    "eps": 1.0e-8
+}
+CFG.TRAIN.LR_SCHEDULER = EasyDict()
+CFG.TRAIN.LR_SCHEDULER.TYPE = "MultiStepLR"
+CFG.TRAIN.LR_SCHEDULER.PARAM = {
+    "milestones": [1, 30, 38, 46, 54, 150],
+    "gamma": 0.5
+}
+
+# ================= train ================= #
+CFG.TRAIN.CLIP_GRAD_PARAM = {
+    "max_norm": 5.0
+}
+CFG.TRAIN.NUM_EPOCHS = 200
+CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("checkpoints", "baselines", "D2STGNN_PEMS04_" + str(CFG.TRAIN.NUM_EPOCHS))
+# train data
+CFG.TRAIN.DATA = EasyDict()
+# read data
+CFG.TRAIN.DATA.DIR = "datasets/" + CFG.DATASET_NAME
+# dataloader args, optional
+CFG.TRAIN.DATA.BATCH_SIZE = 16
+CFG.TRAIN.DATA.PREFETCH = False
+CFG.TRAIN.DATA.SHUFFLE = True
+CFG.TRAIN.DATA.NUM_WORKERS = 2
+CFG.TRAIN.DATA.PIN_MEMORY = False
+# curriculum learning
+CFG.TRAIN.CL = EasyDict()
+CFG.TRAIN.CL.WARM_EPOCHS = 30
+CFG.TRAIN.CL.CL_EPOCHS = 3
+CFG.TRAIN.CL.PREDICTION_LENGTH = 12
+
+# ================= validate ================= #
+CFG.VAL = EasyDict()
+CFG.VAL.INTERVAL = 1
+# validating data
+CFG.VAL.DATA = EasyDict()
+# read data
+CFG.VAL.DATA.DIR = "datasets/" + CFG.DATASET_NAME
+# dataloader args, optional
+CFG.VAL.DATA.BATCH_SIZE = 16
+CFG.VAL.DATA.PREFETCH = False
+CFG.VAL.DATA.SHUFFLE = False
+CFG.VAL.DATA.NUM_WORKERS = 2
+CFG.VAL.DATA.PIN_MEMORY = False
+
+# ================= test ================= #
+CFG.TEST = EasyDict()
+CFG.TEST.INTERVAL = 1
+# test data
+CFG.TEST.DATA = EasyDict()
+# read data
+CFG.TEST.DATA.DIR = "datasets/" + CFG.DATASET_NAME
+# dataloader args, optional
+CFG.TEST.DATA.BATCH_SIZE = 16
+CFG.TEST.DATA.PREFETCH = False
+CFG.TEST.DATA.SHUFFLE = False
+CFG.TEST.DATA.NUM_WORKERS = 2
+CFG.TEST.DATA.PIN_MEMORY = False
+
+# ===== D2STGNN 16-input runner overrides (auto-generated) =====
+CFG.ENV.SEED = 1
+if hasattr(CFG, 'SEED'):
+    CFG.SEED = 1
+if hasattr(CFG, 'TRAIN') and hasattr(CFG.TRAIN, 'SEED'):
+    CFG.TRAIN.SEED = 1
+CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("checkpoints/d2stgnn_h16_pems04/gap4/h32/seed1")
+CFG.DESCRIPTION = "D2STGNN PeMS04 16→32 gap=4 seed1"
+CFG.DATASET_INPUT_LEN = 16
+CFG.DATASET_OUTPUT_LEN = 32
+CFG.TEST.EVALUATION_HORIZONS = list(range(1, 33))
+CFG.MODEL.PARAM["gap"] = 4
+CFG.MODEL.PARAM["input_seq_len"] = 16
+CFG.MODEL.PARAM["output_seq_len"] = 32
+CFG.MODEL.PARAM["seq_length"] = 32
+CFG.TRAIN.CL.PREDICTION_LENGTH = 32

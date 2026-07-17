@@ -82,9 +82,8 @@ class ChainForecasting(nn.Module):
         self.spatial_graph_loss_weights = list(
             model_args.get("spatial_graph_loss_weights", [0.0, 0.0, 0.0])
         )
-        self.graph_resolution_ratios = list(
-            model_args.get("graph_resolution_ratios", [0.25, 0.50, 1.00])
-        )
+        ratios_arg = model_args.get("graph_resolution_ratios")
+        self.graph_resolution_ratios = list(ratios_arg) if ratios_arg is not None else None
         self.dataset_name = str(model_args.get("dataset_name", "PEMS04"))
         self.clustering_seed = int(model_args.get("clustering_seed", 0))
         self._last_graph_diagnostics = None
@@ -227,6 +226,7 @@ class ChainForecasting(nn.Module):
         self.progressive_spatial_modules = nn.ModuleList()
         self.post_chain_spatial_modules = nn.ModuleList()
         self.graph_resolution_stack = None
+        self.capdist_refine_stack = None
 
         spatial_stage_count = (
             len(self.matched_stage_lengths)
@@ -264,6 +264,9 @@ class ChainForecasting(nn.Module):
                 post_spatial_mode=self.post_spatial_mode,
                 graph_resolution_ratios=self.graph_resolution_ratios,
                 graph_resolution_capacities=model_args.get("graph_resolution_capacities"),
+                graph_resolution_skip_final_identity=model_args.get(
+                    "graph_resolution_skip_final_identity", False
+                ),
                 graph_resolution_alphas=model_args.get(
                     "graph_resolution_alphas", [0.03, 0.06, 0.10]
                 ),
@@ -274,7 +277,7 @@ class ChainForecasting(nn.Module):
                     "graph_resolution_betas", [1.0, 1.0, 1.0]
                 ),
                 graph_resolution_rhos=model_args.get(
-                    "graph_resolution_rhos", self.graph_resolution_ratios
+                    "graph_resolution_rhos", self.graph_resolution_ratios or [0.50]
                 ),
                 adp_hidden_dim=model_args.get("adp_hidden_dim", 32),
                 adp_tau=model_args.get("adp_tau", 0.5),
@@ -282,6 +285,7 @@ class ChainForecasting(nn.Module):
                 dataset_name=self.dataset_name,
                 cluster_cache_dir=model_args.get("graph_cluster_cache_dir"),
                 graph_cluster_method=model_args.get("graph_cluster_method", "current"),
+                graph_cluster_affinity=model_args.get("graph_cluster_affinity"),
                 cluster_train_series_path=model_args.get("cluster_train_series_path"),
                 cluster_spatial_coord_path=model_args.get("cluster_spatial_coord_path"),
                 cluster_road_distance_path=model_args.get("cluster_road_distance_path"),
@@ -292,12 +296,51 @@ class ChainForecasting(nn.Module):
                 cluster_max_lag=model_args.get("cluster_max_lag", 12),
                 cluster_lambda_s=model_args.get("cluster_lambda_s", 0.2),
                 cluster_acf_lag=model_args.get("cluster_acf_lag", 24),
+                cluster_graph_mix_lambda=model_args.get("cluster_graph_mix_lambda", 0.5),
+                cluster_graph_mix_lambdas=model_args.get("cluster_graph_mix_lambdas"),
+                capdist_sigma_d=model_args.get("capdist_sigma_d"),
+                capdist_lambda_d=model_args.get("capdist_lambda_d"),
+                capdist_use_road_distance=model_args.get("capdist_use_road_distance", True),
+                capdist_use_hard_cutoff=model_args.get("capdist_use_hard_cutoff", False),
                 data_dir=model_args.get("data_dir"),
+                variant_name=model_args.get("variant_name", ""),
                 adaptive_ms_topks=model_args.get("adaptive_ms_topks", [8, 16, 32]),
                 adaptive_ms_alpha=model_args.get("adaptive_ms_alpha", 0.10),
                 adaptive_ms_fusion=model_args.get("adaptive_ms_fusion", "softmax"),
                 adaptive_ms_share_logits=model_args.get("adaptive_ms_share_logits", True),
                 adaptive_ms_init=model_args.get("adaptive_ms_init", "favor_largest"),
+            )
+        elif self.spatial_placement == "temporal_first_capdist_refine":
+            from basicts.archs.arch_zoo.ChainForecasting_arch.capdist_refine_spatial import (
+                CapDistRefineSpatialStack,
+            )
+
+            self.capdist_refine_stack = CapDistRefineSpatialStack(
+                node_size=self.node_size,
+                input_len=self.input_len,
+                output_len=self.output_len,
+                chain_lengths=self.chain_lengths,
+                d_spa=self.d_spa,
+                if_spatial=self.if_spatial,
+                spatial_scheme=self.spatial_scheme,
+                adj_mx_path=model_args.get("adj_mx_path"),
+                post_spatial_mode=self.post_spatial_mode,
+                capdist_cluster_method=model_args.get(
+                    "capdist_cluster_method", "capdist_spectral_pair"
+                ),
+                capdist_use_road_distance=model_args.get("capdist_use_road_distance", True),
+                capdist_sigma_d=model_args.get("capdist_sigma_d", 0.5),
+                capdist_lambda_d=model_args.get("capdist_lambda_d", 0.1),
+                capdist_lambda_mix=model_args.get("capdist_lambda_mix"),
+                capdist_alphas=model_args.get("capdist_alphas"),
+                capdist_topks=model_args.get("capdist_topks"),
+                clustering_seed=self.clustering_seed,
+                dataset_name=self.dataset_name,
+                cluster_cache_dir=model_args.get("graph_cluster_cache_dir"),
+                cluster_road_distance_path=model_args.get("cluster_road_distance_path"),
+                unified_aux_loss_mode=model_args.get("unified_aux_loss_mode", "none"),
+                adp_hidden_dim=model_args.get("adp_hidden_dim", 32),
+                adp_tau=model_args.get("adp_tau", 0.5),
             )
 
     @staticmethod
@@ -392,11 +435,13 @@ class ChainForecasting(nn.Module):
             "interleaved_progressive",
             "temporal_first_multiscale",
             "temporal_first_graph_resolution",
+            "temporal_first_capdist_refine",
         }:
             raise ValueError(
                 f"Unsupported spatial_placement: {placement}. "
                 "Expected 'final', 'each_level', 'none', 'interleaved_progressive', "
-                "'temporal_first_multiscale', or 'temporal_first_graph_resolution'."
+                "'temporal_first_multiscale', 'temporal_first_graph_resolution', "
+                "or 'temporal_first_capdist_refine'."
             )
         return placement
 
@@ -409,6 +454,7 @@ class ChainForecasting(nn.Module):
             "each_level": "each_level",
             "temporal_first_multiscale": "temporal_first_multiscale",
             "temporal_first_graph_resolution": "graph_resolution",
+            "temporal_first_capdist_refine": "capdist_refine",
         }
         return mapping.get(spatial_placement, spatial_placement)
 
@@ -421,6 +467,7 @@ class ChainForecasting(nn.Module):
             "final",
             "temporal_first_multiscale",
             "temporal_first_graph_resolution",
+            "temporal_first_capdist_refine",
         }
 
     @staticmethod
@@ -466,6 +513,106 @@ class ChainForecasting(nn.Module):
             current = module.refine_prediction(current, history_flow)
             stage_outputs.append(current)
         return current, stage_outputs
+
+    def _temporal_step_trainable(self, step_idx: int, stage: str) -> bool:
+        stage = str(stage).upper()
+        if stage == "FT":
+            return True
+        if stage == "T1":
+            return step_idx == 0
+        if stage == "T2":
+            return step_idx == 1
+        if stage == "T3":
+            return step_idx == 2
+        return False
+
+    def _forward_temporal_stagewise(
+        self,
+        history_data: torch.Tensor,
+        stage: str,
+        detach_previous: bool = True,
+    ) -> list[torch.Tensor]:
+        spatial_codebook = self._spatial_codebook()
+        stage = str(stage).upper()
+        if stage in {"T1", "T2", "T3"}:
+            max_step = {"T1": 0, "T2": 1, "T3": 2}[stage]
+        else:
+            max_step = len(self.temporal_steps) - 1
+
+        temporal_preds: list[torch.Tensor] = []
+        prev_forecast = None
+        for step_idx in range(max_step + 1):
+            target_len = self.chain_lengths[step_idx]
+            prev_up = None
+            if (
+                self.propagation_mode == "forecast_state"
+                and prev_forecast is not None
+                and self.use_prev_condition
+            ):
+                prev_up = interpolate_forecast(prev_forecast, target_len)
+                if detach_previous and not self._temporal_step_trainable(step_idx, stage):
+                    prev_up = prev_up.detach()
+
+            trainable = self._temporal_step_trainable(step_idx, stage) or stage == "FT"
+            step = self.temporal_steps[step_idx]
+            ctx = torch.enable_grad() if trainable else torch.no_grad()
+            with ctx:
+                t_k = step(
+                    history_data,
+                    prev_forecast=prev_up,
+                    spatial_codebook=spatial_codebook,
+                )
+            if detach_previous and step_idx < max_step and stage in {"T1", "T2", "T3"}:
+                if not self._temporal_step_trainable(step_idx + 1, stage):
+                    t_k = t_k.detach()
+            temporal_preds.append(t_k)
+            prev_forecast = t_k
+        return temporal_preds
+
+    def _forward_chain_stagewise(
+        self,
+        history_data: torch.Tensor,
+        stage: str,
+        detach_previous: bool = True,
+    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor], list[torch.Tensor], dict]:
+        self._last_graph_diagnostics = None
+        stage = str(stage).upper()
+        temporal_preds = self._forward_temporal_stagewise(history_data, stage, detach_previous)
+        y_temporal_final = temporal_preds[-1]
+        chain_preds = list(temporal_preds)
+        spatial_preds = list(temporal_preds)
+        spatial_stage_preds: list[torch.Tensor] = []
+        y_final = y_temporal_final
+        extras: dict = {
+            "pred_T_low": temporal_preds[0] if temporal_preds else None,
+            "pred_T_mid": temporal_preds[1] if len(temporal_preds) > 1 else None,
+            "pred_T_full": temporal_preds[-1],
+        }
+
+        if stage in {"S14", "S12", "S1", "FT"} and self.spatial_placement == "temporal_first_graph_resolution":
+            history_flow = history_data[..., 0]
+            max_spatial = {"S14": 0, "S12": 1, "S1": 2, "FT": 2}[stage]
+            active_spatial = 2 if stage == "FT" else max_spatial
+            graph_out = self.graph_resolution_stack.forward_stagewise(
+                y_temporal_final,
+                history_flow,
+                active_stage_idx=active_spatial,
+                max_stage_idx=max_spatial,
+                detach_previous=detach_previous,
+                train_all_spatial=stage == "FT",
+            )
+            y_final = graph_out["pred"]
+            spatial_stage_preds = graph_out.get("node_stage_preds") or []
+            self._last_graph_diagnostics = graph_out
+            node_preds = graph_out.get("node_stage_preds_all") or []
+            extras["Y_after_S14"] = node_preds[1] if len(node_preds) > 1 else None
+            extras["Y_after_S12"] = node_preds[2] if len(node_preds) > 2 else None
+            extras["Y_after_S1"] = graph_out["pred"]
+
+        if self.chain_supervision_source == "temporal_chain" and chain_preds:
+            chain_preds[-1] = y_temporal_final
+
+        return y_final, chain_preds, temporal_preds, spatial_preds, spatial_stage_preds, extras
 
     def _forward_chain(
         self, history_data: torch.Tensor
@@ -547,6 +694,14 @@ class ChainForecasting(nn.Module):
             y_final = graph_out["pred"]
             spatial_stage_preds = graph_out["node_stage_preds"]
             self._last_graph_diagnostics = graph_out
+        elif self.spatial_placement == "temporal_first_capdist_refine":
+            history_flow = history_data[..., 0]
+            capdist_out = self.capdist_refine_stack(
+                y_temporal_final, history_flow, return_diagnostics=True
+            )
+            y_final = capdist_out["pred"]
+            spatial_stage_preds = capdist_out["node_stage_preds"]
+            self._last_graph_diagnostics = capdist_out
 
         if self.chain_supervision_source == "temporal_chain":
             chain_preds[-1] = y_temporal_final
@@ -581,6 +736,12 @@ class ChainForecasting(nn.Module):
             spatial_stage_preds.append(y)
         elif self.spatial_placement == "temporal_first_multiscale":
             y, spatial_stage_preds = self._apply_post_chain_spatial_stages(y, history_data)
+        elif self.spatial_placement == "temporal_first_capdist_refine":
+            history_flow = history_data[..., 0]
+            capdist_out = self.capdist_refine_stack(y, history_flow, return_diagnostics=True)
+            y = capdist_out["pred"]
+            spatial_stage_preds = capdist_out["node_stage_preds"]
+            self._last_graph_diagnostics = capdist_out
 
         return y, [y], [y], [y], spatial_stage_preds
 
@@ -605,15 +766,33 @@ class ChainForecasting(nn.Module):
         epoch: int = 0,
         train: bool = False,
         return_all: bool = False,
+        return_intermediates: bool = False,
+        stagewise_stage=None,
+        detach_previous: bool = True,
         **kwargs,
     ):
-        y_final, chain_preds, temporal_preds, spatial_preds, spatial_stage_preds = (
-            self._forward_direct_matched(history_data)
-            if self.architecture_mode == "direct_matched"
-            else self._forward_chain(history_data)
-        )
+        stagewise_extras: dict = {}
+        if stagewise_stage:
+            (
+                y_final,
+                chain_preds,
+                temporal_preds,
+                spatial_preds,
+                spatial_stage_preds,
+                stagewise_extras,
+            ) = self._forward_chain_stagewise(
+                history_data,
+                stage=stagewise_stage,
+                detach_previous=detach_previous,
+            )
+        else:
+            y_final, chain_preds, temporal_preds, spatial_preds, spatial_stage_preds = (
+                self._forward_direct_matched(history_data)
+                if self.architecture_mode == "direct_matched"
+                else self._forward_chain(history_data)
+            )
 
-        if return_all:
+        if return_all or return_intermediates:
             result = {
                 "pred": y_final,
                 "chain_preds": chain_preds,
@@ -625,6 +804,12 @@ class ChainForecasting(nn.Module):
                 "chain_lengths": list(self.chain_lengths),
                 "spatial_organization_type": self.spatial_organization_type,
             }
+            if temporal_preds:
+                result["pred_T_low"] = temporal_preds[0]
+                if len(temporal_preds) > 1:
+                    result["pred_T_mid"] = temporal_preds[1]
+                result["pred_T_full"] = temporal_preds[-1]
+            result.update(stagewise_extras)
             if self._last_graph_diagnostics is not None:
                 result["graph_resolution_diagnostics"] = self._last_graph_diagnostics
                 diag = self._last_graph_diagnostics
@@ -635,6 +820,8 @@ class ChainForecasting(nn.Module):
                 result["graph_ratios"] = diag.get("graph_ratios")
                 if self.graph_resolution_stack is not None:
                     result["graph_resolution_metadata"] = self.graph_resolution_stack.metadata()
+                if self.capdist_refine_stack is not None:
+                    result["graph_resolution_metadata"] = self.capdist_refine_stack.metadata()
             result.update(self._collect_adaptive_ms_diagnostics())
             return result
         return y_final

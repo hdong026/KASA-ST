@@ -1,0 +1,120 @@
+TRAIN:
+  LOSS: masked_mae
+  OPTIM:
+    TYPE: Adam
+    PARAM:
+      lr: 0.002
+      weight_decay: 0.0001
+  LR_SCHEDULER:
+    TYPE: MultiStepLR
+    PARAM:
+      milestones: [1, 35, 60, 80, 95]
+      gamma: 0.5
+  NUM_EPOCHS: 100
+  CKPT_SAVE_DIR: checkpoints/pems04_unified_aux/h16/GR7_alpha_high_no_final/seed1
+  DATA:
+    DIR: datasets/PEMS04
+    BATCH_SIZE: 32
+    PREFETCH: False
+    SHUFFLE: True
+    NUM_WORKERS: 2
+    PIN_MEMORY: False
+  NULL_VAL: 0.0
+VAL:
+  INTERVAL: 1
+  DATA:
+    DIR: datasets/PEMS04
+    BATCH_SIZE: 32
+    PREFETCH: False
+    SHUFFLE: False
+    NUM_WORKERS: 2
+    PIN_MEMORY: False
+TEST:
+  INTERVAL: 1
+  DATA:
+    DIR: datasets/PEMS04
+    BATCH_SIZE: 32
+    PREFETCH: False
+    SHUFFLE: False
+    NUM_WORKERS: 2
+    PIN_MEMORY: False
+
+[GraphResolution] stage=0 method=current M=77 max_size=18 road=None cache=/home/dhz/KASA-ST/generated/cache/graph_clusters/PEMS04_N307_M77_s0_81a0d869e9a8c66c.npz
+[GraphResolution] stage=1 method=current M=154 max_size=3 road=None cache=/home/dhz/KASA-ST/generated/cache/graph_clusters/PEMS04_N307_M154_s0_bdc912816cd72e78.npz
+train len: 10177
+val len: 3392
+test len: 3392
+
+  0%|          | 0/319 [00:00<?, ?it/s]
+  0%|          | 0/319 [00:00<?, ?it/s]
+2026-07-16 02:10:17,376 - easytorch-training - ERROR - Traceback (most recent call last):
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 31, in training_func
+    runner.train(cfg)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/core/runner.py", line 339, in train
+    loss = self.train_iters(epoch, iter_index, data)
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 405, in train_iters
+    forward_return = list(self.forward(data=data, epoch=epoch, iter_num=iter_num, train=True))
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 131, in forward
+    out = self.model(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 616, in forward
+    else self._forward_chain(history_data)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 502, in _forward_chain
+    t_k = step(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/kasa_temporal_step.py", line 224, in forward
+    downsamp_encoder(downsamp_input, spatial_codebook=spatial_codebook)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/downsamp_emb.py", line 102, in forward
+    hidden = torch.concat((hidden, future_time_in_day_emb, future_day_in_week_emb), dim=1)
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 32.00 MiB. GPU 0 has a total capacity of 23.55 GiB of which 33.88 MiB is free. Process 354280 has 21.36 GiB memory in use. Including non-PyTorch memory, this process has 2.13 GiB memory in use. Of the allocated memory 1.64 GiB is allocated by PyTorch, and 51.01 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+Traceback (most recent call last):
+  File "/home/dhz/KASA-ST/examples/run.py", line 88, in <module>
+    main()
+  File "/home/dhz/KASA-ST/examples/run.py", line 84, in main
+    launch_training(args.cfg, devices)
+  File "/home/dhz/KASA-ST/basicts/launcher.py", line 23, in launch_training
+    easytorch.launch_training(cfg=cfg, devices=gpus, node_rank=node_rank)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 86, in launch_training
+    train_dist(cfg)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 35, in training_func
+    raise e
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 31, in training_func
+    runner.train(cfg)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/core/runner.py", line 339, in train
+    loss = self.train_iters(epoch, iter_index, data)
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 405, in train_iters
+    forward_return = list(self.forward(data=data, epoch=epoch, iter_num=iter_num, train=True))
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 131, in forward
+    out = self.model(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 616, in forward
+    else self._forward_chain(history_data)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 502, in _forward_chain
+    t_k = step(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/kasa_temporal_step.py", line 224, in forward
+    downsamp_encoder(downsamp_input, spatial_codebook=spatial_codebook)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/downsamp_emb.py", line 102, in forward
+    hidden = torch.concat((hidden, future_time_in_day_emb, future_day_in_week_emb), dim=1)
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 32.00 MiB. GPU 0 has a total capacity of 23.55 GiB of which 33.88 MiB is free. Process 354280 has 21.36 GiB memory in use. Including non-PyTorch memory, this process has 2.13 GiB memory in use. Of the allocated memory 1.64 GiB is allocated by PyTorch, and 51.01 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

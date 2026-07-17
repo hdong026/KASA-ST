@@ -67,10 +67,13 @@ GRAPH_RES_COMMON_KEYS = (
     "graph_resolution_betas",
     "graph_resolution_rhos",
     "graph_cluster_method",
+    "graph_cluster_affinity",
     "cluster_road_distance_path",
     "cluster_sigma_d",
     "cluster_delta_4",
     "cluster_delta_2",
+    "graph_resolution_skip_final_identity",
+    "cluster_graph_mix_lambda",
 )
 
 GRAPH_RES_RATIO_KEYS = ("graph_resolution_ratios",) + GRAPH_RES_COMMON_KEYS
@@ -91,6 +94,7 @@ GR7_SPARSE_BASE: dict[str, Any] = {
     "cluster_sigma_d": 0.5,
     "cluster_delta_4": 0.8,
     "cluster_delta_2": 0.5,
+    "graph_resolution_skip_final_identity": False,
 }
 
 COMMON_FIXED: dict[str, Any] = {
@@ -145,6 +149,35 @@ VARIANT_SPECS: dict[str, dict[str, Any]] = {
     "GR7_sparse_topk": {
         **GR7_SPARSE_BASE,
         "unified_aux_loss_mode": "none",
+    },
+    "GR7_capdist_mix": {
+        "spatial_placement": "temporal_first_graph_resolution",
+        "post_spatial_mode": "adaptive_cluster_mix",
+        "graph_cluster_method": "capdist_spectral",
+        "graph_resolution_capacities": [4, 2, 1],
+        "graph_resolution_topks": [4, 8, 16],
+        "graph_resolution_alphas": [0.02, 0.08, 0.10],
+        "graph_resolution_betas": [1.0, 1.0, 1.0],
+        "graph_resolution_rhos": [1.0, 1.0, 1.0],
+        "cluster_graph_mix_lambdas": [0.3, 0.5, 0.3],
+        "capdist_sigma_d": 0.5,
+        "capdist_lambda_d": 0.05,
+        "capdist_use_hard_cutoff": False,
+        "capdist_use_road_distance": True,
+        "clustering_seed": 0,
+        "dataset_name": "PEMS04",
+        "cluster_road_distance_path": "datasets/raw_data/PEMS04/adj_PEMS04_distance.pkl",
+        "cluster_sigma_d": 0.5,
+        "cluster_delta_4": 0.8,
+        "cluster_delta_2": 0.5,
+        "graph_resolution_skip_final_identity": False,
+        "unified_aux_loss_mode": "none",
+    },
+    "GR7_stagewise": {
+        **GR7_SPARSE_BASE,
+        "variant_name": "GR7_stagewise",
+        "unified_aux_loss_mode": "none",
+        "spatial_graph_loss_weights": [0.0, 0.0, 0.0],
     },
     "GR7_unified_direct_small": {
         **GR7_SPARSE_BASE,
@@ -205,6 +238,88 @@ VARIANT_SPECS: dict[str, dict[str, Any]] = {
         **GR7_SPARSE_BASE,
         "graph_resolution_capacities": [4, 2, 1],
         "graph_cluster_method": "gr21_road_graclus_matching_4_2_1",
+        "unified_aux_loss_mode": "none",
+    },
+    "GR19a_cap_only_spectral": {
+        **GR7_SPARSE_BASE,
+        "graph_cluster_method": "gr19a_cap_only_spectral",
+        "unified_aux_loss_mode": "none",
+    },
+    "GR19b_road_cap_spectral": {
+        **GR7_SPARSE_BASE,
+        "graph_cluster_method": "gr19b_road_cap_spectral",
+        "unified_aux_loss_mode": "none",
+    },
+    "GR19a_cap_only_spectral_S12_cluster_mix": {
+        "spatial_placement": "temporal_first_graph_resolution",
+        "post_spatial_mode": "adaptive_cluster_mix",
+        "graph_cluster_method": "cap_only_spectral",
+        "graph_cluster_affinity": "adj_sym",
+        "graph_resolution_capacities": [2],
+        "graph_resolution_skip_final_identity": True,
+        "graph_resolution_ratios": None,
+        "graph_resolution_alphas": [0.10],
+        "graph_resolution_topks": [8],
+        "graph_resolution_betas": [1.0],
+        "graph_resolution_rhos": [0.50],
+        "cluster_graph_mix_lambda": 0.5,
+        "clustering_seed": 0,
+        "dataset_name": "PEMS04",
+        "cluster_road_distance_path": "datasets/raw_data/PEMS04/adj_PEMS04_distance.pkl",
+        "cluster_sigma_d": 0.5,
+        "cluster_delta_4": 0.8,
+        "cluster_delta_2": 0.5,
+        "unified_aux_loss_mode": "none",
+    },
+    "GR7_full_current": {
+        **GR7_SPARSE_BASE,
+        "graph_cluster_method": "current",
+        "unified_aux_loss_mode": "none",
+    },
+    "GR7_no_S1": {
+        **GR7_SPARSE_BASE,
+        "graph_resolution_ratios": [0.25, 0.50],
+        "graph_resolution_alphas": [0.03, 0.06],
+        "graph_resolution_topks": [4, 8],
+        "graph_resolution_betas": [1.0, 1.0],
+        "graph_resolution_rhos": [0.25, 0.50],
+        "graph_resolution_skip_final_identity": True,
+        "graph_cluster_method": "current",
+        "unified_aux_loss_mode": "none",
+    },
+    "GR7_S14_only": {
+        **GR7_SPARSE_BASE,
+        "graph_resolution_ratios": [0.25],
+        "graph_resolution_alphas": [0.03],
+        "graph_resolution_topks": [4],
+        "graph_resolution_betas": [1.0],
+        "graph_resolution_rhos": [0.25],
+        "graph_cluster_method": "current",
+        "unified_aux_loss_mode": "none",
+    },
+    "GR7_S12_only": {
+        **GR7_SPARSE_BASE,
+        "graph_resolution_ratios": [0.50],
+        "graph_resolution_alphas": [0.06],
+        "graph_resolution_topks": [8],
+        "graph_resolution_betas": [1.0],
+        "graph_resolution_rhos": [0.50],
+        "graph_cluster_method": "current",
+        "unified_aux_loss_mode": "none",
+    },
+    "GR7_alpha_default": {
+        **GR7_SPARSE_BASE,
+        "graph_resolution_alphas": [0.03, 0.06, 0.10],
+        "unified_aux_loss_mode": "none",
+    },
+    "GR7_alpha_high_no_final": {
+        **GR7_SPARSE_BASE,
+        "graph_resolution_alphas": [0.10, 0.10, 0.00],
+        "unified_aux_loss_mode": "none",
+    },
+    "GR7_alpha_coarse_heavy": {
+        **GR7_SPARSE_BASE,
+        "graph_resolution_alphas": [0.15, 0.10, 0.00],
         "unified_aux_loss_mode": "none",
     },
 }
@@ -304,6 +419,7 @@ def generate_temp_config(
             f'CFG.DESCRIPTION = "PeMS04 unified aux h{horizon}: {variant} seed{seed}"'
         ),
     ]
+    lines.append(f'CFG.MODEL.PARAM["variant_name"] = {_py_literal(variant)}')
     for key, val in spec.items():
         if val is None:
             continue
@@ -373,11 +489,8 @@ def validate_generated_config(cfg_path: Path, horizon: int, variant: str) -> Non
         if bool(param.get("aux_include_spatial_final", False)):
             raise ValueError(f"{cfg_path}: aux_include_spatial_final must be False")
     if placement == "temporal_first_graph_resolution":
-        res_keys = (
-            GRAPH_RES_CAPACITY_KEYS
-            if "graph_resolution_capacities" in spec
-            else GRAPH_RES_RATIO_KEYS
-        )
+        use_caps = "graph_resolution_capacities" in spec
+        res_keys = GRAPH_RES_CAPACITY_KEYS if use_caps else GRAPH_RES_RATIO_KEYS
         list_keys = (
             "graph_resolution_ratios",
             "graph_resolution_capacities",
@@ -385,17 +498,33 @@ def validate_generated_config(cfg_path: Path, horizon: int, variant: str) -> Non
             "graph_resolution_topks",
             "graph_resolution_betas",
             "graph_resolution_rhos",
+            "cluster_graph_mix_lambdas",
         )
+        optional_keys = {
+            "graph_resolution_ratios",
+            "graph_resolution_rhos",
+            "cluster_graph_mix_lambda",
+            "cluster_graph_mix_lambdas",
+            "graph_cluster_affinity",
+        }
         lengths = []
         for key in res_keys:
             if key not in param:
+                if use_caps and key in optional_keys:
+                    continue
                 raise ValueError(f"{cfg_path}: missing {key} for graph resolution variant")
             if key in list_keys:
                 lengths.append(len(list(param[key])))
+        if "cluster_graph_mix_lambdas" in param and "graph_resolution_capacities" in param:
+            if len(param["cluster_graph_mix_lambdas"]) != len(param["graph_resolution_capacities"]):
+                raise ValueError(
+                    f"{cfg_path}: cluster_graph_mix_lambdas length must match "
+                    f"graph_resolution_capacities"
+                )
         if lengths and len(set(lengths)) != 1:
             raise ValueError(
                 f"{cfg_path}: graph_resolution_* lengths mismatch: "
-                f"{dict(zip(res_keys, lengths))}"
+                f"{dict(zip([k for k in res_keys if k in param and k in list_keys], lengths))}"
             )
         if "clustering_seed" not in param:
             raise ValueError(f"{cfg_path}: missing clustering_seed")
@@ -1068,7 +1197,12 @@ def dry_run_info(horizon: int, variant: str, seed: int, cfg_path: Path, ckpt_roo
     print(f"    nu_spatial: {aux['nu_spatial']}")
     print(f"    gamma_anchor: {aux['gamma_anchor']}")
     if spec.get("spatial_placement") == "temporal_first_graph_resolution":
-        for key in GRAPH_RES_KEYS:
+        res_keys = (
+            GRAPH_RES_CAPACITY_KEYS
+            if "graph_resolution_capacities" in spec
+            else GRAPH_RES_RATIO_KEYS
+        )
+        for key in res_keys:
             print(f"    {key}: {spec.get(key)}")
     print(f"    params: {count_params(cfg_path)}")
     print(f"    cmd: {cmd}")

@@ -111,6 +111,8 @@ class ABCDSpatialModule(nn.Module):
         adaptive_ms_fusion="softmax",
         adaptive_ms_share_logits=True,
         adaptive_ms_init="favor_largest",
+        cluster_adj=None,
+        cluster_graph_mix_lambda=0.5,
     ):
         super().__init__()
         self.node_size = node_size
@@ -134,7 +136,14 @@ class ABCDSpatialModule(nn.Module):
             self.use_gcn = False
             self.use_lightweight_spatial = False
 
-        if self.post_spatial_mode != "adaptive_multiscale_only" and self.spatial_scheme in {"A", "B", "C", "D"}:
+        if self.post_spatial_mode == "adaptive_cluster_mix":
+            self.use_adaptive_adj = True
+            self.use_dynamic_spatial = False
+            self.use_hybrid_graph = False
+            self.use_gcn = False
+            self.use_lightweight_spatial = False
+
+        if self.post_spatial_mode not in {"adaptive_multiscale_only", "adaptive_cluster_mix"} and self.spatial_scheme in {"A", "B", "C", "D"}:
             self.use_gcn = self.spatial_scheme in {"A", "C"}
             self.use_dynamic_spatial = self.spatial_scheme in {"B", "C"}
             self.use_adaptive_adj = self.spatial_scheme in {"C"}
@@ -158,6 +167,7 @@ class ABCDSpatialModule(nn.Module):
 
         self.hybrid_alpha = hybrid_alpha
         self.light_alpha = light_alpha
+        self.cluster_graph_mix_lambda = float(cluster_graph_mix_lambda)
 
         self.adaptive_ms_topks = list(adaptive_ms_topks or [8, 16, 32])
         self.adaptive_ms_alpha = float(adaptive_ms_alpha)
@@ -233,6 +243,15 @@ class ABCDSpatialModule(nn.Module):
         self.last_adaptive_adj = None
         self.last_adaptive_ms_weights = None
         self.last_adaptive_ms_entropy = None
+        self.last_cluster_adj = None
+        self.last_mix_adj = None
+        self.last_adp_density = None
+        self.last_cluster_density = None
+        self.last_adj_mean_abs_diff = None
+        if cluster_adj is not None:
+            self.register_buffer("cluster_adj", cluster_adj.float())
+        else:
+            self.cluster_adj = None
 
     def _build_dynamic_adj(self, history_flow):
         node_signal = history_flow.permute(0, 2, 1)  # [B, N, L]
@@ -399,6 +418,30 @@ class ABCDSpatialModule(nn.Module):
 
         x = output.squeeze(-1)
 
+        if self.post_spatial_mode == "adaptive_cluster_mix":
+            if self.cluster_adj is None:
+                raise RuntimeError("cluster_adj is required for adaptive_cluster_mix mode.")
+            adp_adj = self._build_adaptive_adj()
+            if adp_adj.shape != self.cluster_adj.shape:
+                raise RuntimeError(
+                    f"adaptive_cluster_mix shape mismatch: A_adp {tuple(adp_adj.shape)} "
+                    f"vs A_cluster {tuple(self.cluster_adj.shape)}"
+                )
+            self.last_adaptive_adj = adp_adj.detach()
+            self.last_cluster_adj = self.cluster_adj.detach()
+            lam = self.cluster_graph_mix_lambda
+            a_mix = (1.0 - lam) * adp_adj + lam * self.cluster_adj
+            self.last_mix_adj = a_mix.detach()
+            with torch.no_grad():
+                self.last_adp_density = float((adp_adj > 1e-6).float().mean().item())
+                self.last_cluster_density = float((self.cluster_adj > 1e-6).float().mean().item())
+                self.last_adj_mean_abs_diff = float(
+                    (adp_adj - self.cluster_adj).abs().mean().item()
+                )
+            adj = a_mix.unsqueeze(0).expand(history_flow.shape[0], -1, -1)
+            refine = apply_adj(x, adj).unsqueeze(-1)
+            return output + self.hybrid_alpha * refine
+
         explicit_modes = {
             "hybrid",
             "static_only",
@@ -441,6 +484,14 @@ class ABCDSpatialModule(nn.Module):
             return output + self.light_alpha * smooth
 
         return output
+
+    def get_cluster_mix_diagnostics(self) -> dict[str, float]:
+        return {
+            "a_adp_density": float(self.last_adp_density or 0.0),
+            "a_cluster_density": float(self.last_cluster_density or 0.0),
+            "a_cluster_adp_mean_abs_diff": float(self.last_adj_mean_abs_diff or 0.0),
+            "cluster_graph_mix_lambda": float(self.cluster_graph_mix_lambda),
+        }
 
     def get_adaptive_adj(self):
         """Return adaptive adjacency used in adaptive-only post-spatial refinement."""

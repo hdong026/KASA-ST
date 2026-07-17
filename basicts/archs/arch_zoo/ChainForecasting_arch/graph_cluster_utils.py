@@ -17,6 +17,11 @@ GRAPH_CLUSTER_METHOD_CURRENT = "current"
 GRAPH_CLUSTER_METHOD_ROAD_SPECTRAL = "gr17_road_spectral"
 GRAPH_CLUSTER_METHOD_CONSTRAINED_SPECTRAL = "gr18_constrained_spectral_cap_dist"
 GRAPH_CLUSTER_METHOD_CAP_KMEANS_SPECTRAL = "gr19_spectral_constrained_kmeans_cap"
+GRAPH_CLUSTER_METHOD_CAP_KMEANS_ADJ = "gr19a_cap_only_spectral"
+GRAPH_CLUSTER_METHOD_CAP_KMEANS_ROAD = "gr19b_road_cap_spectral"
+GRAPH_CLUSTER_METHOD_CAP_ONLY_SPECTRAL = "cap_only_spectral"
+GRAPH_CLUSTER_METHOD_CAPDIST_SPECTRAL_PAIR = "capdist_spectral_pair"
+GRAPH_CLUSTER_METHOD_CAPDIST_SPECTRAL = "capdist_spectral"
 GRAPH_CLUSTER_METHOD_GRACLUS = "gr20_graclus_matching_4_2_1"
 GRAPH_CLUSTER_METHOD_ROAD_GRACLUS = "gr21_road_graclus_matching_4_2_1"
 
@@ -25,6 +30,11 @@ GRAPH_CLUSTER_METHODS = {
     GRAPH_CLUSTER_METHOD_ROAD_SPECTRAL,
     GRAPH_CLUSTER_METHOD_CONSTRAINED_SPECTRAL,
     GRAPH_CLUSTER_METHOD_CAP_KMEANS_SPECTRAL,
+    GRAPH_CLUSTER_METHOD_CAP_KMEANS_ADJ,
+    GRAPH_CLUSTER_METHOD_CAP_KMEANS_ROAD,
+    GRAPH_CLUSTER_METHOD_CAP_ONLY_SPECTRAL,
+    GRAPH_CLUSTER_METHOD_CAPDIST_SPECTRAL_PAIR,
+    GRAPH_CLUSTER_METHOD_CAPDIST_SPECTRAL,
     GRAPH_CLUSTER_METHOD_GRACLUS,
     GRAPH_CLUSTER_METHOD_ROAD_GRACLUS,
     "pearson_balanced_pam",
@@ -45,9 +55,20 @@ CAPACITY_MULTILEVEL_METHODS = {
     GRAPH_CLUSTER_METHOD_ROAD_GRACLUS,
 }
 
+CAPACITY_SINGLE_STAGE_METHODS = {
+    GRAPH_CLUSTER_METHOD_CAP_ONLY_SPECTRAL,
+}
+
+CAPACITY_CAPDIST_METHODS = {
+    GRAPH_CLUSTER_METHOD_CAPDIST_SPECTRAL,
+}
+
 SPECTRAL_EMBEDDING_METHODS = {
     GRAPH_CLUSTER_METHOD_CONSTRAINED_SPECTRAL,
     GRAPH_CLUSTER_METHOD_CAP_KMEANS_SPECTRAL,
+    GRAPH_CLUSTER_METHOD_CAP_KMEANS_ADJ,
+    GRAPH_CLUSTER_METHOD_CAP_KMEANS_ROAD,
+    GRAPH_CLUSTER_METHOD_CAP_ONLY_SPECTRAL,
 }
 
 DEFAULT_ROAD_DISTANCE_PATHS: dict[str, str] = {
@@ -64,7 +85,11 @@ PAM_BALANCED_METHODS = {
 PAM_STANDARD_METHODS = {"pearson_standard_pam"}
 
 
-def resolve_graph_resolution_sizes(node_size: int, ratios: list[float]) -> list[int]:
+def resolve_graph_resolution_sizes(
+    node_size: int,
+    ratios: list[float],
+    skip_final_identity: bool = False,
+) -> list[int]:
     """Map ratios to cluster counts M_j with safeguards."""
     sizes: list[int] = []
     for ratio in ratios:
@@ -75,6 +100,8 @@ def resolve_graph_resolution_sizes(node_size: int, ratios: list[float]) -> list[
     for m in sizes:
         if not deduped or deduped[-1] != m:
             deduped.append(m)
+    if skip_final_identity:
+        return deduped
     if not deduped or deduped[-1] != node_size:
         if node_size in deduped[:-1]:
             deduped = [m for m in deduped if m != node_size]
@@ -82,17 +109,447 @@ def resolve_graph_resolution_sizes(node_size: int, ratios: list[float]) -> list[
     return deduped
 
 
-def resolve_graph_resolution_capacities(capacities: list[int]) -> list[int]:
-    """Return capacity schedule coarse-to-fine, always ending with 1 (identity)."""
-    caps = [int(c) for c in capacities]
-    if not caps or caps[-1] != 1:
-        caps = [c for c in caps if c != 1]
-        caps.append(1)
+def resolve_graph_resolution_capacities(
+    capacities: list[int],
+    skip_final_identity: bool = False,
+) -> list[int]:
+    """Return capacity schedule coarse-to-fine; append 1 unless skip_final_identity."""
+    caps = [int(c) for c in capacities if int(c) > 1]
     deduped: list[int] = []
     for c in caps:
         if not deduped or deduped[-1] != c:
             deduped.append(c)
+    if skip_final_identity:
+        return deduped
+    if not deduped or deduped[-1] != 1:
+        deduped.append(1)
     return deduped
+
+
+def num_clusters_for_capacity(node_size: int, max_capacity: int) -> int:
+    """M = ceil(N / K) for capacity K."""
+    k = max(1, int(max_capacity))
+    return (int(node_size) + k - 1) // k
+
+
+def cluster_graph_adjacency_normalized(
+    adj_sym: np.ndarray,
+    p: np.ndarray,
+    c: np.ndarray,
+    eps: float = 1e-8,
+) -> np.ndarray:
+    """Row-normalized cluster graph: A_cluster = Normalize(P @ A_sym @ C), [M, M]."""
+    a = np.asarray(p, dtype=np.float64) @ np.asarray(adj_sym, dtype=np.float64) @ np.asarray(c, dtype=np.float64)
+    row_sum = a.sum(axis=1, keepdims=True) + eps
+    return (a / row_sum).astype(np.float32)
+
+
+def row_normalize_square(adj: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    a = np.asarray(adj, dtype=np.float64)
+    row_sum = a.sum(axis=1, keepdims=True) + eps
+    return (a / row_sum).astype(np.float32)
+
+
+def build_distance_aware_affinity_soft(
+    adj_sym: np.ndarray,
+    dist_norm: np.ndarray | None,
+    sigma_d: float = 0.5,
+) -> tuple[np.ndarray, str, bool]:
+    """Soft road-distance-aware affinity without hard cannot-link cutoff."""
+    if dist_norm is not None:
+        sigma = max(float(sigma_d), 1e-6)
+        w = adj_sym * np.exp(-(dist_norm ** 2) / (sigma ** 2))
+        np.fill_diagonal(w, 0.0)
+        return np.maximum(w, 0.0).astype(np.float64), "distance_aware_affinity", True
+    return np.asarray(adj_sym, dtype=np.float64), "adj_sym", False
+
+
+def _cluster_medoids(
+    features: np.ndarray,
+    labels: np.ndarray,
+    num_clusters: int,
+    dist_norm: np.ndarray | None,
+) -> np.ndarray:
+    medoids = np.zeros(num_clusters, dtype=np.int64)
+    for k in range(num_clusters):
+        members = np.where(labels == k)[0]
+        if members.size == 0:
+            medoids[k] = int(np.argmin(((features - features.mean(axis=0)) ** 2).sum(axis=1)))
+            continue
+        if dist_norm is not None and members.size > 1:
+            sub = dist_norm[np.ix_(members, members)]
+            medoids[k] = int(members[int(np.argmin(sub.sum(axis=1)))])
+        elif members.size == 1:
+            medoids[k] = int(members[0])
+        else:
+            center = features[members].mean(axis=0)
+            medoids[k] = int(members[int(np.argmin(((features[members] - center) ** 2).sum(axis=1)))])
+    return medoids
+
+
+def _capdist_pair_assign_slots(
+    features: np.ndarray,
+    centers: np.ndarray,
+    medoids: np.ndarray,
+    max_capacity: int,
+    dist_norm: np.ndarray | None,
+    lambda_d: float,
+) -> np.ndarray:
+    n, m = features.shape[0], centers.shape[0]
+    slots = m * int(max_capacity)
+    emb_cost = ((features[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
+    cost = np.zeros((n, slots), dtype=np.float64)
+    for cl in range(m):
+        node_cost = emb_cost[:, cl]
+        if dist_norm is not None and float(lambda_d) > 0:
+            node_cost = node_cost + float(lambda_d) * dist_norm[:, medoids[cl]]
+        for s in range(int(max_capacity)):
+            cost[:, cl * int(max_capacity) + s] = node_cost
+    try:
+        from scipy.optimize import linear_sum_assignment
+
+        _, col_ind = linear_sum_assignment(cost)
+        return (col_ind // int(max_capacity)).astype(np.int64)
+    except Exception:
+        labels = np.full(n, -1, dtype=np.int64)
+        remaining = np.full(m, int(max_capacity), dtype=np.int64)
+        flat_cost = cost.min(axis=1)
+        order = np.argsort(flat_cost)
+        for node in order:
+            slot_order = np.argsort(cost[node])
+            for slot in slot_order:
+                cl = int(slot // int(max_capacity))
+                if remaining[cl] <= 0:
+                    continue
+                labels[node] = cl
+                remaining[cl] -= 1
+                break
+            if labels[node] < 0:
+                raise RuntimeError("CapDist greedy slot assignment failed.")
+        return labels
+
+
+def _capdist_pair_constrained_kmeans(
+    features: np.ndarray,
+    num_clusters: int,
+    max_capacity: int,
+    dist_norm: np.ndarray | None,
+    lambda_d: float,
+    seed: int,
+    max_iter: int = 20,
+) -> tuple[np.ndarray, str]:
+    centers = _kmeans_centers(features, num_clusters, seed=seed)
+    labels = np.zeros(features.shape[0], dtype=np.int64)
+    medoids = _cluster_medoids(features, labels, num_clusters, dist_norm)
+    tag = "capdist_slot_hungarian"
+    for it in range(max_iter):
+        new_labels = _capdist_pair_assign_slots(
+            features, centers, medoids, max_capacity, dist_norm, lambda_d
+        )
+        if np.array_equal(new_labels, labels) and it > 0:
+            break
+        labels = new_labels
+        for k in range(num_clusters):
+            mask = labels == k
+            if mask.any():
+                centers[k] = features[mask].mean(axis=0)
+        medoids = _cluster_medoids(features, labels, num_clusters, dist_norm)
+    return labels, tag
+
+
+def build_capdist_spectral_assignment(
+    node_size: int,
+    adj_mx_path: str | None,
+    max_capacity: int,
+    seed: int = 0,
+    dataset_name: str = "PEMS04",
+    cluster_road_distance_path: str | Path | None = None,
+    cluster_sigma_d: float = 0.5,
+    cluster_lambda_d: float = 0.1,
+    use_road_distance: bool = True,
+    graph_cluster_method: str = GRAPH_CLUSTER_METHOD_CAPDIST_SPECTRAL,
+) -> dict[str, Any]:
+    """Capacity + soft distance constrained spectral clustering (no hard cannot-link)."""
+    adj_sym = symmetrize_adjacency(load_raw_adj_numpy(adj_mx_path, node_size))
+    dist_norm = None
+    road_path = ""
+    w, affinity_source, road_used = build_distance_aware_affinity_soft(adj_sym, None, cluster_sigma_d)
+    if use_road_distance:
+        try:
+            dist_raw, road_path = load_road_distance_matrix(
+                node_size,
+                dataset_name=dataset_name,
+                cluster_road_distance_path=cluster_road_distance_path,
+            )
+            dist_norm = normalize_road_distance_matrix(dist_raw)
+            w, affinity_source, road_used = build_distance_aware_affinity_soft(
+                adj_sym, dist_norm, cluster_sigma_d
+            )
+            print(
+                f"[CapDist] road_distance_used=True affinity_source={affinity_source} "
+                f"path={road_path}"
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            w, affinity_source, road_used = build_distance_aware_affinity_soft(
+                adj_sym, None, cluster_sigma_d
+            )
+            print(
+                f"[CapDist] road_distance_used=False affinity_source=adj_sym "
+                f"(fallback: {exc})"
+            )
+    else:
+        print("[CapDist] road_distance_used=False affinity_source=adj_sym (disabled)")
+
+    cap_k = max(1, int(max_capacity))
+    num_clusters = num_clusters_for_capacity(node_size, cap_k)
+    embed_dim = min(num_clusters, node_size - 1)
+    z = _spectral_embedding(w, embed_dim)
+    labels, sub_method = _capdist_pair_constrained_kmeans(
+        z,
+        num_clusters,
+        cap_k,
+        dist_norm=dist_norm,
+        lambda_d=cluster_lambda_d,
+        seed=seed,
+    )
+    c = labels_to_assignment(labels, node_size, num_clusters)
+    p = assignment_to_projection(c)
+    val = validate_cluster_assignment(
+        {"C": c, "P": p, "labels": labels, "num_clusters": num_clusters}
+    )
+    if val["max_cluster_size"] > cap_k:
+        raise RuntimeError(f"CapDist cluster size exceeds {cap_k}: {val}")
+    if not val["row_one_hot_ok"]:
+        raise RuntimeError("CapDist assignment rows are not one-hot.")
+    method_tag = (
+        "capdist_spectral_pair"
+        if graph_cluster_method == GRAPH_CLUSTER_METHOD_CAPDIST_SPECTRAL_PAIR
+        else "capdist_spectral"
+    )
+    return {
+        "node_size": node_size,
+        "num_clusters": num_clusters,
+        "clustering_method": f"{method_tag}_{sub_method}",
+        "graph_cluster_method": graph_cluster_method,
+        "C": c,
+        "P": p,
+        "labels": labels,
+        "affinity_W": w.astype(np.float32),
+        "adj_sym": adj_sym.astype(np.float32),
+        "road_distance_used": road_used,
+        "affinity_source": affinity_source,
+        "road_distance_path": road_path,
+        "sigma_d": float(cluster_sigma_d),
+        "lambda_d": float(cluster_lambda_d),
+        "max_capacity": cap_k,
+        "capacity": cap_k,
+        "validation": val,
+    }
+
+
+def build_capdist_spectral_pair_assignment(
+    node_size: int,
+    adj_mx_path: str | None,
+    seed: int = 0,
+    dataset_name: str = "PEMS04",
+    cluster_road_distance_path: str | Path | None = None,
+    cluster_sigma_d: float = 0.5,
+    cluster_lambda_d: float = 0.1,
+    use_road_distance: bool = True,
+) -> dict[str, Any]:
+    """S1/2 clustering: capacity K=2, M=ceil(N/2), soft distance penalty."""
+    return build_capdist_spectral_assignment(
+        node_size=node_size,
+        adj_mx_path=adj_mx_path,
+        max_capacity=2,
+        seed=seed,
+        dataset_name=dataset_name,
+        cluster_road_distance_path=cluster_road_distance_path,
+        cluster_sigma_d=cluster_sigma_d,
+        cluster_lambda_d=cluster_lambda_d,
+        use_road_distance=use_road_distance,
+        graph_cluster_method=GRAPH_CLUSTER_METHOD_CAPDIST_SPECTRAL_PAIR,
+    )
+
+
+def load_or_build_capdist_spectral_cluster(
+    node_size: int,
+    max_capacity: int,
+    adj_mx_path: str | None,
+    seed: int = 0,
+    dataset_name: str = "PEMS04",
+    cache_dir: str | Path | None = None,
+    cluster_road_distance_path: str | Path | None = None,
+    cluster_sigma_d: float = 0.5,
+    cluster_lambda_d: float = 0.1,
+    use_road_distance: bool = True,
+) -> tuple[dict[str, Any], Path]:
+    cap_k = max(1, int(max_capacity))
+    num_clusters = num_clusters_for_capacity(node_size, cap_k)
+    extra = {
+        "sigma_d": cluster_sigma_d,
+        "lambda_d": cluster_lambda_d,
+        "max_capacity": cap_k,
+        "use_road": bool(use_road_distance),
+        "road": str(
+            _resolve_path(cluster_road_distance_path)
+            or DEFAULT_ROAD_DISTANCE_PATHS.get(dataset_name, "none")
+        ),
+    }
+    cache_root = Path(cache_dir) if cache_dir else default_cache_dir()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    key = _cache_key(
+        dataset_name,
+        node_size,
+        num_clusters,
+        adj_mx_path,
+        seed,
+        GRAPH_CLUSTER_METHOD_CAPDIST_SPECTRAL,
+        extra,
+    )
+    cache_path = cache_root / (
+        f"{dataset_name}_N{node_size}_M{num_clusters}_K{cap_k}_capdist_s{seed}_{key}.npz"
+    )
+    if cache_path.is_file():
+        data = np.load(cache_path, allow_pickle=True)
+        meta: dict[str, Any] = {
+            "node_size": int(data["node_size"]),
+            "num_clusters": int(data["num_clusters"]),
+            "clustering_method": str(data["clustering_method"]),
+            "graph_cluster_method": GRAPH_CLUSTER_METHOD_CAPDIST_SPECTRAL,
+            "C": data["C"].astype(np.float32),
+            "P": data["P"].astype(np.float32),
+            "labels": data["labels"],
+            "affinity_W": data["affinity_W"].astype(np.float32),
+            "road_distance_used": bool(data.get("road_distance_used", False)),
+            "affinity_source": str(data.get("affinity_source", "unknown")),
+            "sigma_d": float(data.get("sigma_d", cluster_sigma_d)),
+            "lambda_d": float(data.get("lambda_d", cluster_lambda_d)),
+            "max_capacity": cap_k,
+            "capacity": cap_k,
+        }
+        if "validation" in data:
+            val = data["validation"]
+            meta["validation"] = val.item() if isinstance(val, np.ndarray) and val.shape == () else val
+        return meta, cache_path
+
+    meta = build_capdist_spectral_assignment(
+        node_size=node_size,
+        adj_mx_path=adj_mx_path,
+        max_capacity=cap_k,
+        seed=seed,
+        dataset_name=dataset_name,
+        cluster_road_distance_path=cluster_road_distance_path,
+        cluster_sigma_d=cluster_sigma_d,
+        cluster_lambda_d=cluster_lambda_d,
+        use_road_distance=use_road_distance,
+        graph_cluster_method=GRAPH_CLUSTER_METHOD_CAPDIST_SPECTRAL,
+    )
+    meta["resolution_tag"] = capacity_stage_tag(cap_k)
+    np.savez_compressed(
+        cache_path,
+        node_size=meta["node_size"],
+        num_clusters=meta["num_clusters"],
+        clustering_method=meta["clustering_method"],
+        graph_cluster_method=meta["graph_cluster_method"],
+        C=meta["C"],
+        P=meta["P"],
+        labels=meta["labels"],
+        affinity_W=meta["affinity_W"],
+        road_distance_used=meta["road_distance_used"],
+        affinity_source=meta["affinity_source"],
+        sigma_d=meta["sigma_d"],
+        lambda_d=meta["lambda_d"],
+        max_capacity=cap_k,
+        validation=meta["validation"],
+    )
+    return meta, cache_path
+
+
+def load_or_build_capdist_half_cluster(
+    node_size: int,
+    adj_mx_path: str | None,
+    seed: int = 0,
+    dataset_name: str = "PEMS04",
+    cache_dir: str | Path | None = None,
+    cluster_road_distance_path: str | Path | None = None,
+    cluster_sigma_d: float = 0.5,
+    cluster_lambda_d: float = 0.1,
+    use_road_distance: bool = True,
+) -> tuple[dict[str, Any], Path]:
+    num_clusters = num_clusters_for_capacity(node_size, 2)
+    extra = {
+        "sigma_d": cluster_sigma_d,
+        "lambda_d": cluster_lambda_d,
+        "use_road": bool(use_road_distance),
+        "road": str(
+            _resolve_path(cluster_road_distance_path)
+            or DEFAULT_ROAD_DISTANCE_PATHS.get(dataset_name, "none")
+        ),
+    }
+    cache_root = Path(cache_dir) if cache_dir else default_cache_dir()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    key = _cache_key(
+        dataset_name,
+        node_size,
+        num_clusters,
+        adj_mx_path,
+        seed,
+        GRAPH_CLUSTER_METHOD_CAPDIST_SPECTRAL_PAIR,
+        extra,
+    )
+    cache_path = cache_root / (
+        f"{dataset_name}_N{node_size}_M{num_clusters}_capdist_s{seed}_{key}.npz"
+    )
+    if cache_path.is_file():
+        data = np.load(cache_path, allow_pickle=True)
+        meta: dict[str, Any] = {
+            "node_size": int(data["node_size"]),
+            "num_clusters": int(data["num_clusters"]),
+            "clustering_method": str(data["clustering_method"]),
+            "graph_cluster_method": GRAPH_CLUSTER_METHOD_CAPDIST_SPECTRAL_PAIR,
+            "C": data["C"].astype(np.float32),
+            "P": data["P"].astype(np.float32),
+            "labels": data["labels"],
+            "affinity_W": data["affinity_W"].astype(np.float32),
+            "road_distance_used": bool(data.get("road_distance_used", False)),
+            "affinity_source": str(data.get("affinity_source", "unknown")),
+            "sigma_d": float(data.get("sigma_d", cluster_sigma_d)),
+            "lambda_d": float(data.get("lambda_d", cluster_lambda_d)),
+            "max_capacity": 2,
+        }
+        if "validation" in data:
+            val = data["validation"]
+            meta["validation"] = val.item() if isinstance(val, np.ndarray) and val.shape == () else val
+        return meta, cache_path
+
+    meta = build_capdist_spectral_pair_assignment(
+        node_size=node_size,
+        adj_mx_path=adj_mx_path,
+        seed=seed,
+        dataset_name=dataset_name,
+        cluster_road_distance_path=cluster_road_distance_path,
+        cluster_sigma_d=cluster_sigma_d,
+        cluster_lambda_d=cluster_lambda_d,
+        use_road_distance=use_road_distance,
+    )
+    np.savez_compressed(
+        cache_path,
+        node_size=meta["node_size"],
+        num_clusters=meta["num_clusters"],
+        clustering_method=meta["clustering_method"],
+        graph_cluster_method=meta["graph_cluster_method"],
+        C=meta["C"],
+        P=meta["P"],
+        labels=meta["labels"],
+        affinity_W=meta["affinity_W"],
+        road_distance_used=meta["road_distance_used"],
+        affinity_source=meta["affinity_source"],
+        sigma_d=meta["sigma_d"],
+        lambda_d=meta["lambda_d"],
+        validation=meta["validation"],
+    )
+    return meta, cache_path
 
 
 def capacity_stage_tag(capacity: int) -> str:
@@ -445,6 +902,9 @@ def build_graclus_multilevel_assignment(
         "graph_cluster_method": method,
         "road_distance_used": road_used,
         "road_distance_path": road_path,
+        "affinity_source": (
+            "road_distance_affinity" if road_used else "adj_sym"
+        ),
         "sigma_d": float(cluster_sigma_d),
         "delta": cluster_road_delta,
         "M4": m4,
@@ -527,8 +987,19 @@ def _build_spectral_variant_assignment(
     road_used = False
     road_path = ""
     dist_norm = None
+    affinity_source = "adj_sym"
 
-    if method in ROAD_DISTANCE_METHODS or method == GRAPH_CLUSTER_METHOD_ROAD_SPECTRAL:
+    if method in {GRAPH_CLUSTER_METHOD_CAP_KMEANS_ADJ, GRAPH_CLUSTER_METHOD_CAP_ONLY_SPECTRAL}:
+        affinity = adj_sym
+        affinity_source = "adj_sym"
+    elif method == GRAPH_CLUSTER_METHOD_CAP_KMEANS_ROAD:
+        dist_norm, road_path = load_road_distance_matrix(
+            node_size, dataset_name=dataset_name, cluster_road_distance_path=cluster_road_distance_path
+        )
+        affinity = build_road_distance_affinity(adj_sym, dist_norm, sigma_d=cluster_sigma_d)
+        road_used = True
+        affinity_source = "road_distance_affinity"
+    elif method in ROAD_DISTANCE_METHODS or method == GRAPH_CLUSTER_METHOD_ROAD_SPECTRAL:
         dist_norm, road_path = load_road_distance_matrix(
             node_size, dataset_name=dataset_name, cluster_road_distance_path=cluster_road_distance_path
         )
@@ -537,6 +1008,7 @@ def _build_spectral_variant_assignment(
         )
         road_used = True
         affinity = w
+        affinity_source = "road_distance_affinity"
     elif method == GRAPH_CLUSTER_METHOD_CAP_KMEANS_SPECTRAL:
         affinity = adj_sym
         try:
@@ -546,10 +1018,13 @@ def _build_spectral_variant_assignment(
             w = build_road_distance_affinity(adj_sym, dist_norm, sigma_d=cluster_sigma_d)
             affinity = w
             road_used = True
+            affinity_source = "road_distance_affinity"
         except FileNotFoundError:
             affinity = adj_sym
+            affinity_source = "adj_sym_fallback"
     else:
         affinity = adj_sym
+        affinity_source = "adj_sym"
 
     if method == GRAPH_CLUSTER_METHOD_ROAD_SPECTRAL:
         labels, sub_method = _spectral_cluster_labels(affinity, num_clusters, seed=seed)
@@ -583,6 +1058,7 @@ def _build_spectral_variant_assignment(
         "labels": labels,
         "road_distance_used": road_used,
         "road_distance_path": road_path,
+        "affinity_source": affinity_source,
         "sigma_d": float(cluster_sigma_d),
         "delta": cluster_delta if method == GRAPH_CLUSTER_METHOD_CONSTRAINED_SPECTRAL else cluster_road_delta,
         "max_capacity": int(cluster_max_capacity),
@@ -1351,6 +1827,9 @@ def build_cluster_assignment(
         GRAPH_CLUSTER_METHOD_ROAD_SPECTRAL,
         GRAPH_CLUSTER_METHOD_CONSTRAINED_SPECTRAL,
         GRAPH_CLUSTER_METHOD_CAP_KMEANS_SPECTRAL,
+        GRAPH_CLUSTER_METHOD_CAP_KMEANS_ADJ,
+        GRAPH_CLUSTER_METHOD_CAP_KMEANS_ROAD,
+        GRAPH_CLUSTER_METHOD_CAP_ONLY_SPECTRAL,
     }:
         cap = int(cluster_max_capacity)
         delta = cluster_delta
@@ -1379,6 +1858,7 @@ def build_cluster_assignment(
         distance_summary = {
             "road_distance_used": meta.get("road_distance_used"),
             "road_distance_path": meta.get("road_distance_path"),
+            "affinity_source": meta.get("affinity_source"),
             "sigma_d": meta.get("sigma_d"),
             "delta": meta.get("delta"),
             "max_capacity": meta.get("max_capacity"),
@@ -1396,7 +1876,7 @@ def build_cluster_assignment(
         c = labels_to_assignment(labels, node_size, num_clusters)
         medoids = None
         pam_cost = None
-        distance_summary = {}
+        distance_summary = {"affinity_source": "adj_sym", "road_distance_used": False}
     else:
         train_series = load_train_node_series(
             dataset_name=dataset_name,
@@ -1436,6 +1916,9 @@ def build_cluster_assignment(
         GRAPH_CLUSTER_METHOD_ROAD_SPECTRAL,
         GRAPH_CLUSTER_METHOD_CONSTRAINED_SPECTRAL,
         GRAPH_CLUSTER_METHOD_CAP_KMEANS_SPECTRAL,
+        GRAPH_CLUSTER_METHOD_CAP_KMEANS_ADJ,
+        GRAPH_CLUSTER_METHOD_CAP_KMEANS_ROAD,
+        GRAPH_CLUSTER_METHOD_CAP_ONLY_SPECTRAL,
     } and num_clusters < node_size:
         out["distance_summary"] = distance_summary
         out["capacities"] = meta.get("capacities", cluster_capacities(node_size, num_clusters))
@@ -1449,6 +1932,9 @@ def build_cluster_assignment(
         if adj_t is not None:
             out["coarse_adj"] = coarse_adjacency(adj_t.numpy(), c)
     out["validation"] = validate_cluster_assignment(out)
+    if "distance_summary" in out and isinstance(out["distance_summary"], dict):
+        for k, v in out["distance_summary"].items():
+            out.setdefault(k, v)
     return out
 
 
@@ -1494,6 +1980,9 @@ def load_or_build_cluster_assignment(
             GRAPH_CLUSTER_METHOD_ROAD_SPECTRAL,
             GRAPH_CLUSTER_METHOD_CONSTRAINED_SPECTRAL,
             GRAPH_CLUSTER_METHOD_CAP_KMEANS_SPECTRAL,
+            GRAPH_CLUSTER_METHOD_CAP_KMEANS_ADJ,
+            GRAPH_CLUSTER_METHOD_CAP_KMEANS_ROAD,
+            GRAPH_CLUSTER_METHOD_CAP_ONLY_SPECTRAL,
         }:
             rd = _resolve_path(cluster_road_distance_path)
             extra["sigma_d"] = cluster_sigma_d
@@ -1511,6 +2000,9 @@ def load_or_build_cluster_assignment(
         GRAPH_CLUSTER_METHOD_ROAD_SPECTRAL,
         GRAPH_CLUSTER_METHOD_CONSTRAINED_SPECTRAL,
         GRAPH_CLUSTER_METHOD_CAP_KMEANS_SPECTRAL,
+        GRAPH_CLUSTER_METHOD_CAP_KMEANS_ADJ,
+        GRAPH_CLUSTER_METHOD_CAP_KMEANS_ROAD,
+        GRAPH_CLUSTER_METHOD_CAP_ONLY_SPECTRAL,
     }
     if method in literature_methods or method == GRAPH_CLUSTER_METHOD_CURRENT:
         cache_root = Path(cache_dir) if cache_dir else default_cache_dir()
@@ -1549,6 +2041,10 @@ def load_or_build_cluster_assignment(
                 if isinstance(val, np.ndarray) and val.shape == ():
                     val = val.item()
                 meta[optional] = val
+        if "distance_summary" in meta and isinstance(meta["distance_summary"], dict):
+            for k, v in meta["distance_summary"].items():
+                if k not in meta:
+                    meta[k] = v
         return meta, cache_path
 
     meta = build_cluster_assignment(

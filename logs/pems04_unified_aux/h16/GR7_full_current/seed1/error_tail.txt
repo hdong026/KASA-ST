@@ -1,0 +1,120 @@
+    cluster_delta_2: 0.5
+    graph_resolution_skip_final_identity: False
+  FORWARD_FEATURES: [0, 1, 2, 3]
+  TARGET_FEATURES: [0]
+TRAIN:
+  LOSS: masked_mae
+  OPTIM:
+    TYPE: Adam
+    PARAM:
+      lr: 0.002
+      weight_decay: 0.0001
+  LR_SCHEDULER:
+    TYPE: MultiStepLR
+    PARAM:
+      milestones: [1, 35, 60, 80, 95]
+      gamma: 0.5
+  NUM_EPOCHS: 100
+  CKPT_SAVE_DIR: checkpoints/pems04_unified_aux/h16/GR7_full_current/seed1
+  DATA:
+    DIR: datasets/PEMS04
+    BATCH_SIZE: 32
+    PREFETCH: False
+    SHUFFLE: True
+    NUM_WORKERS: 2
+    PIN_MEMORY: False
+  NULL_VAL: 0.0
+VAL:
+  INTERVAL: 1
+  DATA:
+    DIR: datasets/PEMS04
+    BATCH_SIZE: 32
+    PREFETCH: False
+    SHUFFLE: False
+    NUM_WORKERS: 2
+    PIN_MEMORY: False
+TEST:
+  INTERVAL: 1
+  DATA:
+    DIR: datasets/PEMS04
+    BATCH_SIZE: 32
+    PREFETCH: False
+    SHUFFLE: False
+    NUM_WORKERS: 2
+    PIN_MEMORY: False
+
+[GraphResolution] stage=0 method=current M=77 max_size=18 road=None cache=/home/dhz/KASA-ST/generated/cache/graph_clusters/PEMS04_N307_M77_s0_81a0d869e9a8c66c.npz
+[GraphResolution] stage=1 method=current M=154 max_size=3 road=None cache=/home/dhz/KASA-ST/generated/cache/graph_clusters/PEMS04_N307_M154_s0_bdc912816cd72e78.npz
+train len: 10177
+val len: 3392
+test len: 3392
+
+  0%|          | 0/319 [00:00<?, ?it/s]
+  0%|          | 0/319 [00:00<?, ?it/s]
+2026-07-16 02:09:46,810 - easytorch-training - ERROR - Traceback (most recent call last):
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 31, in training_func
+    runner.train(cfg)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/core/runner.py", line 339, in train
+    loss = self.train_iters(epoch, iter_index, data)
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 405, in train_iters
+    forward_return = list(self.forward(data=data, epoch=epoch, iter_num=iter_num, train=True))
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 131, in forward
+    out = self.model(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 616, in forward
+    else self._forward_chain(history_data)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 547, in _forward_chain
+    graph_out = self.graph_resolution_stack(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/graph_resolution_spatial.py", line 275, in forward
+    u_cluster = self._project_nodes(u_node, p)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/graph_resolution_spatial.py", line 242, in _project_nodes
+    return torch.einsum("mn,btnc->btmc", p, node_x)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/functional.py", line 422, in einsum
+    return _VF.einsum(equation, operands)  # type: ignore[attr-defined]
+RuntimeError: CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling `cublasCreate(handle)`
+
+Traceback (most recent call last):
+  File "/home/dhz/KASA-ST/examples/run.py", line 88, in <module>
+    main()
+  File "/home/dhz/KASA-ST/examples/run.py", line 84, in main
+    launch_training(args.cfg, devices)
+  File "/home/dhz/KASA-ST/basicts/launcher.py", line 23, in launch_training
+    easytorch.launch_training(cfg=cfg, devices=gpus, node_rank=node_rank)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 86, in launch_training
+    train_dist(cfg)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 35, in training_func
+    raise e
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 31, in training_func
+    runner.train(cfg)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/core/runner.py", line 339, in train
+    loss = self.train_iters(epoch, iter_index, data)
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 405, in train_iters
+    forward_return = list(self.forward(data=data, epoch=epoch, iter_num=iter_num, train=True))
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 131, in forward
+    out = self.model(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 616, in forward
+    else self._forward_chain(history_data)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 547, in _forward_chain
+    graph_out = self.graph_resolution_stack(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/graph_resolution_spatial.py", line 275, in forward
+    u_cluster = self._project_nodes(u_node, p)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/graph_resolution_spatial.py", line 242, in _project_nodes
+    return torch.einsum("mn,btnc->btmc", p, node_x)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/functional.py", line 422, in einsum
+    return _VF.einsum(equation, operands)  # type: ignore[attr-defined]
+RuntimeError: CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling `cublasCreate(handle)`
