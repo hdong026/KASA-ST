@@ -503,6 +503,7 @@ class GraphResolutionSpatialStack(nn.Module):
         max_stage_idx: int,
         detach_previous: bool = True,
         train_all_spatial: bool = False,
+        skip_stage_indices: list[int] | None = None,
     ) -> dict[str, Any]:
         u_node = forecast
         node_stage_preds: list[torch.Tensor] = [u_node]
@@ -510,10 +511,13 @@ class GraphResolutionSpatialStack(nn.Module):
         cluster_residuals: list[torch.Tensor] = []
         lifted_residuals: list[torch.Tensor] = []
         projection_matrices: list[torch.Tensor] = []
+        skip_set = set(skip_stage_indices or [])
 
         for stage_idx, module in enumerate(self.spatial_modules):
             if stage_idx > max_stage_idx:
                 break
+            if stage_idx in skip_set:
+                continue
             m_j = self.graph_resolution_sizes[stage_idx]
             beta = float(self.graph_resolution_betas[stage_idx])
             c = getattr(self, f"stage{stage_idx}_C")
@@ -556,6 +560,8 @@ class GraphResolutionSpatialStack(nn.Module):
             "graph_ratios": list(self.graph_resolution_rhos),
             "graph_resolution_sizes": list(self.graph_resolution_sizes),
             "graph_resolution_ratios": list(self.graph_resolution_rhos),
+            "graph_resolution_alphas": list(self.graph_resolution_alphas),
+            "graph_resolution_betas": list(self.graph_resolution_betas),
         }
 
     def forward(

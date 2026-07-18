@@ -574,6 +574,7 @@ class ChainForecasting(nn.Module):
         history_data: torch.Tensor,
         stage: str,
         detach_previous: bool = True,
+        stagewise_sequence: str = "full",
     ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor], list[torch.Tensor], dict]:
         self._last_graph_diagnostics = None
         stage = str(stage).upper()
@@ -591,8 +592,16 @@ class ChainForecasting(nn.Module):
 
         if stage in {"S14", "S12", "S1", "FT"} and self.spatial_placement == "temporal_first_graph_resolution":
             history_flow = history_data[..., 0]
-            max_spatial = {"S14": 0, "S12": 1, "S1": 2, "FT": 2}[stage]
-            active_spatial = 2 if stage == "FT" else max_spatial
+            seq = str(stagewise_sequence).lower()
+            if seq == "final_spatial_only" and stage == "S1":
+                active_spatial = 0
+                max_spatial = 0
+            else:
+                max_spatial = {"S14": 0, "S12": 1, "S1": 2, "FT": 2}[stage]
+                active_spatial = 2 if stage == "FT" else max_spatial
+            skip_stage_indices: list[int] = []
+            if seq == "no_s14" and stage == "S12":
+                skip_stage_indices = [0]
             graph_out = self.graph_resolution_stack.forward_stagewise(
                 y_temporal_final,
                 history_flow,
@@ -600,6 +609,7 @@ class ChainForecasting(nn.Module):
                 max_stage_idx=max_spatial,
                 detach_previous=detach_previous,
                 train_all_spatial=stage == "FT",
+                skip_stage_indices=skip_stage_indices,
             )
             y_final = graph_out["pred"]
             spatial_stage_preds = graph_out.get("node_stage_preds") or []
@@ -611,6 +621,44 @@ class ChainForecasting(nn.Module):
 
         if self.chain_supervision_source == "temporal_chain" and chain_preds:
             chain_preds[-1] = y_temporal_final
+
+        return y_final, chain_preds, temporal_preds, spatial_preds, spatial_stage_preds, extras
+
+    def _forward_g1_stagewise(
+        self,
+        history_data: torch.Tensor,
+        stage: str,
+        detach_previous: bool = True,
+    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor], list[torch.Tensor], dict]:
+        """G1_final_adaptive stagewise path: T1/T2/T3 temporal + optional final adaptive spatial (S1)."""
+        self._last_graph_diagnostics = None
+        stage = str(stage).upper()
+        if self.spatial_placement != "final":
+            raise RuntimeError(
+                f"G1_stagewise requires spatial_placement='final', got {self.spatial_placement!r}"
+            )
+        if self.spatial_module is None:
+            raise RuntimeError("G1_stagewise requires spatial_module (final adaptive spatial)")
+
+        temporal_preds = self._forward_temporal_stagewise(history_data, stage, detach_previous)
+        y_temporal_final = temporal_preds[-1]
+        chain_preds = list(temporal_preds)
+        spatial_preds = list(temporal_preds)
+        spatial_stage_preds: list[torch.Tensor] = []
+        extras: dict = {
+            "pred_T_low": temporal_preds[0] if temporal_preds else None,
+            "pred_T_mid": temporal_preds[1] if len(temporal_preds) > 1 else None,
+            "pred_T_full": y_temporal_final,
+            "Y_T": y_temporal_final,
+        }
+        y_final = y_temporal_final
+
+        if stage == "S1":
+            y_T = y_temporal_final.detach() if detach_previous else y_temporal_final
+            y_hat = self._apply_spatial_refine(y_T, history_data)
+            y_final = y_hat
+            extras["pred_final"] = y_hat
+            spatial_stage_preds = [y_hat]
 
         return y_final, chain_preds, temporal_preds, spatial_preds, spatial_stage_preds, extras
 
@@ -769,22 +817,39 @@ class ChainForecasting(nn.Module):
         return_intermediates: bool = False,
         stagewise_stage=None,
         detach_previous: bool = True,
+        stagewise_sequence: str = "full",
+        stagewise_backend: str = "gr7",
         **kwargs,
     ):
         stagewise_extras: dict = {}
         if stagewise_stage:
-            (
-                y_final,
-                chain_preds,
-                temporal_preds,
-                spatial_preds,
-                spatial_stage_preds,
-                stagewise_extras,
-            ) = self._forward_chain_stagewise(
-                history_data,
-                stage=stagewise_stage,
-                detach_previous=detach_previous,
-            )
+            if str(stagewise_backend).lower() == "g1":
+                (
+                    y_final,
+                    chain_preds,
+                    temporal_preds,
+                    spatial_preds,
+                    spatial_stage_preds,
+                    stagewise_extras,
+                ) = self._forward_g1_stagewise(
+                    history_data,
+                    stage=stagewise_stage,
+                    detach_previous=detach_previous,
+                )
+            else:
+                (
+                    y_final,
+                    chain_preds,
+                    temporal_preds,
+                    spatial_preds,
+                    spatial_stage_preds,
+                    stagewise_extras,
+                ) = self._forward_chain_stagewise(
+                    history_data,
+                    stage=stagewise_stage,
+                    detach_previous=detach_previous,
+                    stagewise_sequence=stagewise_sequence,
+                )
         else:
             y_final, chain_preds, temporal_preds, spatial_preds, spatial_stage_preds = (
                 self._forward_direct_matched(history_data)
@@ -810,6 +875,8 @@ class ChainForecasting(nn.Module):
                     result["pred_T_mid"] = temporal_preds[1]
                 result["pred_T_full"] = temporal_preds[-1]
             result.update(stagewise_extras)
+            if stagewise_extras.get("pred_final") is not None:
+                result["pred_final"] = stagewise_extras["pred_final"]
             if self._last_graph_diagnostics is not None:
                 result["graph_resolution_diagnostics"] = self._last_graph_diagnostics
                 diag = self._last_graph_diagnostics

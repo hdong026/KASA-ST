@@ -141,7 +141,7 @@ CFG.TEST.DATA.PIN_MEMORY = False
 
 # ===== GR7_stagewise overrides (auto-generated) =====
 CFG.ENV.SEED = 1
-CFG.TRAIN.NUM_EPOCHS = 60
+CFG.TRAIN.NUM_EPOCHS = 80
 CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("checkpoints/gr7_stagewise/h32/T3/seed1")
 CFG.DESCRIPTION = "GR7_stagewise PeMS04 h32 stage=T3 seed1"
 CFG.MODEL.FORWARD_FEATURES = [0, 1, 2]
@@ -168,15 +168,17 @@ CFG.MODEL.PARAM["spatial_graph_loss_weights"] = [0.0, 0.0, 0.0]
 CFG.MODEL.PARAM["use_extra_prior_input"] = False
 CFG.MODEL.PARAM["chain_lengths"] = [8, 16, 32]
 CFG.MODEL.PARAM["chain_loss_weights"] = [0.0, 0.0, 0.0]
+CFG.MODEL.PARAM["spatial_stage_loss_weights"] = [0.0, 0.0, 0.0]
 CFG.TRAIN.OPTIM.PARAM["lr"] = 0.002
-CFG.TRAIN.LR_SCHEDULER.PARAM["milestones"] = [1, 30, 48]
+CFG.TRAIN.LR_SCHEDULER.PARAM["milestones"] = [1, 40, 64]
 CFG.TRAIN.STAGEWISE = EasyDict()
 CFG.TRAIN.STAGEWISE.enabled = True
 CFG.TRAIN.STAGEWISE.stage = 'T3'
 CFG.TRAIN.STAGEWISE.freeze_previous = True
 CFG.TRAIN.STAGEWISE.detach_previous = True
-CFG.TRAIN.STAGEWISE.fine_tune_lr_scale = 0.1
+CFG.TRAIN.STAGEWISE.stage_sequence = 'no_s14'
+CFG.TRAIN.STAGEWISE.train_shared_temporal = True
 CFG.TRAIN.STAGEWISE.variant_name = 'GR7_stagewise'
 CFG.TRAIN.STAGEWISE.ckpt_root = '/home/dhz/KASA-ST/checkpoints/gr7_stagewise'
-CFG.TRAIN.STAGEWISE.load_checkpoint = '/home/dhz/KASA-ST/checkpoints/gr7_stagewise/H32/seed1/T2.pt'
-CFG.TRAIN.STAGEWISE.save_checkpoint = '/home/dhz/KASA-ST/checkpoints/gr7_stagewise/H32/seed1/T3.pt'
+CFG.TRAIN.STAGEWISE.load_checkpoint = '/home/dhz/KASA-ST/checkpoints/gr7_stagewise/H32/seed1/T2_best.pt'
+CFG.TRAIN.STAGEWISE.save_checkpoint = '/home/dhz/KASA-ST/checkpoints/gr7_stagewise/H32/seed1/T3_best.pt'

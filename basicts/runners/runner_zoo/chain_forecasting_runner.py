@@ -78,6 +78,12 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         self._last_chain_out = None
         self._last_unified_loss_parts: dict[str, float] = {}
         self._last_stagewise_loss_parts: dict[str, float] = {}
+        self._last_stagewise_val_loss_parts: dict[str, float] = {}
+        self._stagewise_alpha_logged: set[str] = set()
+        self._stagewise_best_val_mae: float | None = None
+        self._stagewise_best_test_mae: float | None = None
+        self._stagewise_best_test_rmse: float | None = None
+        self._stagewise_saved_best_this_epoch = False
         self._reset_val_unified_diag()
 
         train_cfg = cfg.get("TRAIN", {}) if hasattr(cfg, "get") else getattr(cfg, "TRAIN", {})
@@ -87,14 +93,24 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         sw = sw or {}
         self.train_num_epochs = int(train_cfg.get("NUM_EPOCHS", 100) if hasattr(train_cfg, "get") else 100)
         self.stagewise_enabled = bool(sw.get("enabled", False))
-        self.stagewise_stage = str(sw.get("stage", "FT")).upper() if self.stagewise_enabled else None
+        self.stagewise_stage = str(sw.get("stage", "T1")).upper() if self.stagewise_enabled else None
         self.stagewise_freeze_previous = bool(sw.get("freeze_previous", True))
         self.stagewise_detach_previous = bool(sw.get("detach_previous", True))
-        self.stagewise_fine_tune_lr_scale = float(sw.get("fine_tune_lr_scale", 0.1))
         self.stagewise_load_checkpoint = sw.get("load_checkpoint")
         self.stagewise_save_checkpoint = sw.get("save_checkpoint")
         self.stagewise_ckpt_root = sw.get("ckpt_root", "checkpoints/gr7_stagewise")
         self.stagewise_variant = str(sw.get("variant_name", param.get("variant_name", "")))
+        self.stagewise_sequence = str(sw.get("stage_sequence", "full")).lower()
+        self.stagewise_train_shared_temporal = bool(sw.get("train_shared_temporal", True))
+        self._graph_resolution_alphas = list(
+            param.get("graph_resolution_alphas", [0.03, 0.06, 0.10])
+        )
+        self._graph_resolution_ratios = list(
+            param.get("graph_resolution_ratios", [0.25, 0.50, 1.00])
+        )
+        self._graph_resolution_topks = list(
+            param.get("graph_resolution_topks", [4, 8, 16])
+        )
         self._stagewise_trainable_info: dict = {}
 
     def _reset_val_unified_diag(self) -> None:
@@ -167,6 +183,7 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             return_intermediates=self.stagewise_enabled,
             stagewise_stage=self.stagewise_stage if self.stagewise_enabled else None,
             detach_previous=self.stagewise_detach_previous if self.stagewise_enabled else True,
+            stagewise_sequence=self.stagewise_sequence if self.stagewise_enabled else "full",
         )
         self._last_chain_out = out
         prediction_data = out["pred"]
@@ -488,19 +505,32 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             self.model,
             stage,
             freeze_previous=self.stagewise_freeze_previous,
+            train_shared_temporal=self.stagewise_train_shared_temporal,
+            sequence=self.stagewise_sequence,
         )
 
+        train_cfg = cfg.get("TRAIN", {}) if hasattr(cfg, "get") else getattr(cfg, "TRAIN", {})
+        optim_param = train_cfg.get("OPTIM", {}).get("PARAM", {}) if hasattr(train_cfg, "get") else {}
+        lr = float(optim_param.get("lr", 0.002))
+        milestones = train_cfg.get("LR_SCHEDULER", {}).get("PARAM", {}).get("milestones", [])
         info = self._stagewise_trainable_info
         self.logger.info(
-            "[GR7_stagewise] variant=%s stage=%s horizon=%s chain_lengths=%s "
-            "freeze_previous=%s detach_previous=%s trainable_count=%s frozen_count=%s "
-            "trainable_modules=%s loss_name=%s load_checkpoint=%s save_checkpoint=%s",
+            "[GR7_stagewise] variant=%s stage=%s horizon=%s seed=%s chain_lengths=%s "
+            "epochs=%s lr=%s milestones=%s freeze_previous=%s detach_previous=%s "
+            "train_shared_temporal=%s stage_sequence=%s trainable_count=%s frozen_count=%s "
+            "trainable_modules=%s loss_name=%s load_checkpoint=%s save_best_checkpoint=%s",
             self.stagewise_variant or "GR7_stagewise",
             stage,
             self.dataset_output_len,
+            cfg.get("ENV", {}).get("SEED"),
             self.chain_lengths,
+            self.train_num_epochs,
+            lr,
+            milestones,
             self.stagewise_freeze_previous,
             self.stagewise_detach_previous,
+            self.stagewise_train_shared_temporal,
+            self.stagewise_sequence,
             info.get("trainable_count"),
             info.get("frozen_count"),
             info.get("trainable_names"),
@@ -508,6 +538,39 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             load_path,
             self.stagewise_save_checkpoint,
         )
+        if self.stagewise_sequence == "final_spatial_only":
+            self.logger.info(
+                "[GR7_stagewise] graph_resolution_ratios=%s graph_resolution_topks=%s "
+                "graph_resolution_alphas=%s",
+                self._graph_resolution_ratios,
+                self._graph_resolution_topks,
+                self._graph_resolution_alphas,
+            )
+        if stage in {"S14", "S12", "S1"}:
+            from basicts.runners.stagewise_training import resolve_spatial_stage_idx
+
+            num_spatial = 1
+            if hasattr(self.model, "graph_resolution_stack") and self.model.graph_resolution_stack:
+                num_spatial = len(self.model.graph_resolution_stack.spatial_modules)
+            alpha_idx = resolve_spatial_stage_idx(stage, self.stagewise_sequence, num_spatial)
+            alpha_r = (
+                self._graph_resolution_alphas[alpha_idx]
+                if alpha_idx < len(self._graph_resolution_alphas)
+                else self._graph_resolution_alphas[-1]
+            )
+            self.logger.info(
+                "[GR7_stagewise] stage=%s alpha_r=%.4f residual_scaled_by_alpha=True",
+                stage,
+                float(alpha_r),
+            )
+        if self.stagewise_sequence == "final_spatial_only" and stage == "S1":
+            alpha_1 = float(self._graph_resolution_alphas[0] if self._graph_resolution_alphas else 0.10)
+            self.logger.info(
+                "[GR7_stagewise] previous_prediction=T3_output_Y_T spatial_stages_active=S1_only "
+                "S14_disabled=True S12_disabled=True alpha_1=%.2f "
+                "S1_loss=residual_if_R_n_available_else_prediction",
+                alpha_1,
+            )
 
     def _log_stagewise_loss_parts(self, epoch: int, iter_index: int, parts: dict[str, float]) -> None:
         if iter_index != 0:
@@ -540,6 +603,11 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
                 real_value,
                 self.chain_lengths,
                 self._raw_loss,
+                sequence=self.stagewise_sequence,
+                logger=self.logger,
+                graph_resolution_alphas=self._graph_resolution_alphas,
+                log_alpha_once=True,
+                _alpha_logged=self._stagewise_alpha_logged,
             )
             self._last_stagewise_loss_parts = parts
             self._log_stagewise_loss_parts(epoch, iter_index, parts)
@@ -567,6 +635,18 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
     def val_iters(self, iter_index: int, data: Union[torch.Tensor, Tuple]):
         forward_return = self.forward(data=data, epoch=None, iter_num=None, train=False)
         out = self._last_chain_out
+        if self.stagewise_enabled:
+            _, real_value = forward_return
+            _, val_parts = compute_stagewise_loss(
+                self.stagewise_stage,
+                out,
+                real_value,
+                self.chain_lengths,
+                self._raw_loss,
+                sequence=self.stagewise_sequence,
+                graph_resolution_alphas=self._graph_resolution_alphas,
+            )
+            self._last_stagewise_val_loss_parts = val_parts
         if self.unified_aux_loss_mode != "none" or out.get("graph_resolution_diagnostics") or self.stagewise_enabled:
             _, real_value = forward_return
             self._update_val_unified_diag(out, real_value)
@@ -586,20 +666,51 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
 
     def on_epoch_end(self, epoch: int):
         super().on_epoch_end(epoch)
-        if (
-            self.stagewise_enabled
-            and self.stagewise_save_checkpoint
-            and epoch >= int(getattr(self, "num_epochs", self.train_num_epochs))
-        ):
-            import os
-            from pathlib import Path
 
-            import torch
+    @master_only
+    def save_best_model(self, epoch: int, metric_name: str, greater_best: bool = True):
+        metric = self.meter_pool.get_avg(metric_name)
+        best_metric = self.best_metrics.get(metric_name)
+        improved = best_metric is None or (
+            metric > best_metric if greater_best else metric < best_metric
+        )
+        super().save_best_model(epoch, metric_name, greater_best)
+        if not (improved and self.stagewise_enabled and self.stagewise_save_checkpoint):
+            return
+        from pathlib import Path
 
-            save_path = Path(self.stagewise_save_checkpoint)
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(self.model.state_dict(), save_path)
-            self.logger.info("[GR7_stagewise] saved stage checkpoint: %s", save_path)
+        import torch
+
+        save_path = Path(self.stagewise_save_checkpoint)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        model = self.model.module if hasattr(self.model, "module") else self.model
+        torch.save(model.state_dict(), save_path)
+        self._stagewise_saved_best_this_epoch = True
+        self._stagewise_best_val_mae = float(metric)
+        self.logger.info("[GR7_stagewise] saved best-val checkpoint: %s (val_%s=%.4f)", save_path, metric_name, metric)
+
+    def on_test_end(self):
+        super().on_test_end()
+        if not self.stagewise_enabled or not self._stagewise_saved_best_this_epoch:
+            return
+        self._stagewise_best_test_mae = float(self.meter_pool.get_avg("test_MAE"))
+        self._stagewise_best_test_rmse = float(self.meter_pool.get_avg("test_RMSE"))
+        self._stagewise_saved_best_this_epoch = False
+
+    def on_training_end(self):
+        super().on_training_end()
+        if self.stagewise_enabled and self.stagewise_stage == "S1":
+            variant = self.stagewise_variant or "GR7_stagewise"
+            self.logger.info(
+                "[GR7_stagewise FINAL S1] variant=%s stage_sequence=%s best_val_MAE=%.4f "
+                "test_MAE@best-val=%.4f test_RMSE@best-val=%.4f saved_checkpoint=%s",
+                variant,
+                self.stagewise_sequence,
+                float(self._stagewise_best_val_mae or self.best_metrics.get("val_MAE", float("nan"))),
+                float(self._stagewise_best_test_mae or float("nan")),
+                float(self._stagewise_best_test_rmse or float("nan")),
+                self.stagewise_save_checkpoint,
+            )
 
     def on_validating_end(self, train_epoch=None):
         super().on_validating_end(train_epoch)
@@ -640,13 +751,16 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
                     diag["mae_final"] / n,
                 )
         if self.stagewise_enabled and n > 0:
-            parts = self._last_stagewise_loss_parts
+            train_parts = self._last_stagewise_loss_parts
+            val_parts = self._last_stagewise_val_loss_parts
             self.logger.info(
-                "[GR7_stagewise val epoch=%s stage=%s] val_final_MAE=%.4f stage_loss=%s",
+                "[GR7_stagewise val epoch=%s stage=%s] train_stage_loss=%s val_stage_loss=%s "
+                "val_final_MAE=%.4f",
                 train_epoch,
                 self.stagewise_stage,
+                {k: round(v, 4) for k, v in (train_parts or {}).items()},
+                {k: round(v, 4) for k, v in (val_parts or {}).items()},
                 diag["mae_final"] / n,
-                {k: round(v, 4) for k, v in (parts or {}).items()},
             )
         self._reset_val_unified_diag()
 

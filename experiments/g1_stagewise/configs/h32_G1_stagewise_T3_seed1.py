@@ -139,46 +139,37 @@ CFG.TEST.DATA.SHUFFLE = False
 CFG.TEST.DATA.NUM_WORKERS = 2
 CFG.TEST.DATA.PIN_MEMORY = False
 
-# ===== GR7_stagewise overrides (auto-generated) =====
+# ===== G1_stagewise overrides (auto-generated) =====
+from basicts.runners import G1StagewiseRunner
+CFG.RUNNER = G1StagewiseRunner
 CFG.ENV.SEED = 1
-CFG.TRAIN.NUM_EPOCHS = 30
-CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("checkpoints/gr7_stagewise/h32/T1/seed1")
-CFG.DESCRIPTION = "GR7_stagewise PeMS04 h32 stage=T1 seed1"
+CFG.TRAIN.NUM_EPOCHS = 80
+CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("checkpoints/g1_stagewise/H32/seed1/T3")
+CFG.DESCRIPTION = "G1_stagewise PeMS04 h32 stage=T3 seed1"
 CFG.MODEL.FORWARD_FEATURES = [0, 1, 2]
 CFG.MODEL.PARAM["input_dim"] = 3
 CFG.MODEL.PARAM["main_input_dim"] = 3
-CFG.MODEL.PARAM["variant_name"] = 'GR7_stagewise'
-CFG.MODEL.PARAM["spatial_placement"] = 'temporal_first_graph_resolution'
+CFG.MODEL.PARAM["variant_name"] = 'G1_stagewise'
+CFG.MODEL.PARAM["base_variant"] = 'G1_final_adaptive'
+CFG.MODEL.PARAM["spatial_placement"] = 'final'
 CFG.MODEL.PARAM["post_spatial_mode"] = 'adaptive_only'
-CFG.MODEL.PARAM["graph_resolution_ratios"] = [0.25, 0.5, 1.0]
-CFG.MODEL.PARAM["graph_resolution_topks"] = [4, 8, 16]
-CFG.MODEL.PARAM["graph_resolution_alphas"] = [0.03, 0.06, 0.1]
-CFG.MODEL.PARAM["graph_resolution_betas"] = [1.0, 1.0, 1.0]
-CFG.MODEL.PARAM["graph_resolution_rhos"] = [0.25, 0.5, 1.0]
-CFG.MODEL.PARAM["graph_cluster_method"] = 'current'
-CFG.MODEL.PARAM["clustering_seed"] = 0
-CFG.MODEL.PARAM["dataset_name"] = 'PEMS04'
-CFG.MODEL.PARAM["cluster_road_distance_path"] = 'datasets/raw_data/PEMS04/adj_PEMS04_distance.pkl'
-CFG.MODEL.PARAM["cluster_sigma_d"] = 0.5
-CFG.MODEL.PARAM["cluster_delta_4"] = 0.8
-CFG.MODEL.PARAM["cluster_delta_2"] = 0.5
-CFG.MODEL.PARAM["graph_resolution_skip_final_identity"] = False
 CFG.MODEL.PARAM["unified_aux_loss_mode"] = 'none'
-CFG.MODEL.PARAM["spatial_graph_loss_weights"] = [0.0, 0.0, 0.0]
+CFG.MODEL.PARAM["use_prev_condition"] = True
 CFG.MODEL.PARAM["use_extra_prior_input"] = False
+CFG.MODEL.PARAM["spatial_graph_loss_weights"] = [0.0, 0.0, 0.0]
 CFG.MODEL.PARAM["chain_lengths"] = [8, 16, 32]
 CFG.MODEL.PARAM["chain_loss_weights"] = [0.0, 0.0, 0.0]
-CFG.MODEL.PARAM["spatial_stage_loss_weights"] = [0.0, 0.0, 0.0]
 CFG.TRAIN.OPTIM.PARAM["lr"] = 0.002
-CFG.TRAIN.LR_SCHEDULER.PARAM["milestones"] = [1, 15, 25]
+CFG.TRAIN.LR_SCHEDULER.PARAM["milestones"] = [1, 40, 65]
 CFG.TRAIN.STAGEWISE = EasyDict()
 CFG.TRAIN.STAGEWISE.enabled = True
-CFG.TRAIN.STAGEWISE.stage = 'T1'
+CFG.TRAIN.STAGEWISE.stage = 'T3'
 CFG.TRAIN.STAGEWISE.freeze_previous = True
 CFG.TRAIN.STAGEWISE.detach_previous = True
-CFG.TRAIN.STAGEWISE.stage_sequence = 'no_s14'
+CFG.TRAIN.STAGEWISE.stage_sequence = "g1"
 CFG.TRAIN.STAGEWISE.train_shared_temporal = True
-CFG.TRAIN.STAGEWISE.variant_name = 'GR7_stagewise'
-CFG.TRAIN.STAGEWISE.ckpt_root = '/home/dhz/KASA-ST/checkpoints/gr7_stagewise'
-CFG.TRAIN.STAGEWISE.load_checkpoint = None
-CFG.TRAIN.STAGEWISE.save_checkpoint = '/home/dhz/KASA-ST/checkpoints/gr7_stagewise/H32/seed1/T1_best.pt'
+CFG.TRAIN.STAGEWISE.variant_name = 'G1_stagewise'
+CFG.TRAIN.STAGEWISE.base_variant = 'G1_final_adaptive'
+CFG.TRAIN.STAGEWISE.ckpt_root = '/home/dhz/KASA-ST/checkpoints/g1_stagewise'
+CFG.TRAIN.STAGEWISE.load_checkpoint = '/home/dhz/KASA-ST/checkpoints/g1_stagewise/H32/seed1/T2_best.pt'
+CFG.TRAIN.STAGEWISE.save_checkpoint = '/home/dhz/KASA-ST/checkpoints/g1_stagewise/H32/seed1/T3_best.pt'

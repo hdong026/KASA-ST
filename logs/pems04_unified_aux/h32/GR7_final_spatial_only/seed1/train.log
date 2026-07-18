@@ -1,0 +1,266 @@
+2026-07-17 20:49:04,700 - easytorch-launcher - INFO - Launching EasyTorch training.
+2026-07-17 20:49:05,707 - easytorch-env - INFO - Use devices 0.
+2026-07-17 20:49:05,732 - easytorch-launcher - INFO - Initializing runner "<class 'basicts.runners.runner_zoo.chain_forecasting_runner.ChainForecastingRunner'>"
+2026-07-17 20:49:05,732 - easytorch-env - INFO - Disable TF32 mode
+2026-07-17 20:49:05,733 - easytorch - INFO - Set ckpt save dir: 'checkpoints/pems04_unified_aux/h32/GR7_final_spatial_only/seed1/be93ebae08290f0d891ae6eea91d31d8'
+2026-07-17 20:49:05,733 - easytorch - INFO - Building model.
+2026-07-17 20:49:05,907 - easytorch-training - INFO - Initializing training.
+2026-07-17 20:49:05,908 - easytorch-training - INFO - Building training data loader.
+2026-07-17 20:49:06,042 - easytorch-training - INFO - Set optim: Adam (
+Parameter Group 0
+    amsgrad: False
+    betas: (0.9, 0.999)
+    capturable: False
+    decoupled_weight_decay: False
+    differentiable: False
+    eps: 1e-08
+    foreach: None
+    fused: None
+    lr: 0.002
+    maximize: False
+    weight_decay: 0.0001
+)
+2026-07-17 20:49:06,043 - easytorch-training - INFO - Set lr_scheduler: <torch.optim.lr_scheduler.MultiStepLR object at 0x7ffa65771280>
+2026-07-17 20:49:06,044 - easytorch-training - INFO - Initializing validation.
+2026-07-17 20:49:06,044 - easytorch-training - INFO - Building val data loader.
+2026-07-17 20:49:06,306 - easytorch-training - INFO - [GR7_final_spatial_only] variant=GR7_final_spatial_only spatial_placement=temporal_first_graph_resolution chain_lengths=[8, 16, 32] use_prev_condition=True spatial_stages=S1_only graph_resolution_ratios=[1.0] graph_resolution_topks=[16] graph_resolution_alphas=[0.1] unified_aux_loss_mode=none stagewise=disabled prior=disabled PTSE=disabled MTSR-P=disabled chain_loss_weights=[0.0, 0.0, 1.0]
+2026-07-17 20:49:06,306 - easytorch-training - INFO - Epoch 1 / 100
+DESCRIPTION: PeMS04 unified aux h32: GR7_final_spatial_only seed1
+RUNNER: <class 'basicts.runners.runner_zoo.chain_forecasting_runner.ChainForecastingRunner'>
+DATASET_CLS: <class 'basicts.data.dataset.TimeSeriesForecastingDataset'>
+DATASET_NAME: PEMS04
+DATASET_TYPE: Traffic flow
+DATASET_INPUT_LEN: 16
+DATASET_OUTPUT_LEN: 32
+GPU_NUM: 1
+ENV:
+  SEED: 1
+  CUDNN:
+    ENABLED: True
+MODEL:
+  NAME: ChainForecasting
+  ARCH: <class 'basicts.archs.arch_zoo.ChainForecasting_arch.ChainForecasting_arch.ChainForecasting'>
+  PARAM:
+    node_size: 307
+    input_len: 16
+    output_len: 32
+    input_dim: 4
+    main_input_dim: 3
+    patch_len: 4
+    stride: 4
+    td_size: 288
+    dw_size: 7
+    d_td: 32
+    d_dw: 32
+    d_d: 32
+    d_spa: 32
+    if_time_in_day: True
+    if_day_in_week: True
+    if_spatial: True
+    num_layer: 2
+    spatial_scheme: C
+    adj_mx_path: datasets/PEMS04/adj_mx.pkl
+    use_gcn: True
+    gcn_hidden_dim: 64
+    use_dynamic_spatial: True
+    dyn_hidden_dim: 64
+    dyn_topk: 20
+    dyn_tau: 0.5
+    dyn_static_weight: 0.2
+    use_adaptive_adj: True
+    adp_hidden_dim: 32
+    adp_topk: 20
+    adp_tau: 0.5
+    use_hybrid_graph: True
+    hybrid_alpha: 0.2
+    use_patch_branch: True
+    use_downsample_branch: True
+    use_linear_residual_branch: True
+    patch_embedding_mode: serial_concat
+    patch_data_input_mode: all
+    post_spatial_mode: adaptive_only
+    spatial_placement: temporal_first_graph_resolution
+    use_pre_temporal_spatial_enhancement: False
+    keep_output_prior_residual: False
+    use_input_prior_enhancement: False
+    use_graph_spectral_calibration: False
+    use_extra_prior_input: False
+    use_prev_condition: True
+    chain_lengths: [8, 16, 32]
+    chain_loss_weights: [0.0, 0.0, 1.0]
+    unified_aux_loss_mode: none
+    aux_eta_temporal: 0.05
+    aux_eta_spatial: 0.03
+    aux_temporal_anchor_weight: 0.02
+    aux_temporal_power: 2.0
+    aux_spatial_power: 2.0
+    aux_include_spatial_final: False
+    aux_mono_margin: 0.0
+    variant_name: GR7_final_spatial_only
+    spatial_graph_loss_weights: []
+    graph_resolution_ratios: [1.0]
+    graph_resolution_topks: [16]
+    graph_resolution_alphas: [0.1]
+    graph_resolution_betas: [1.0]
+    graph_resolution_rhos: [1.0]
+    graph_cluster_method: current
+    clustering_seed: 0
+    dataset_name: PEMS04
+    cluster_road_distance_path: datasets/raw_data/PEMS04/adj_PEMS04_distance.pkl
+    cluster_sigma_d: 0.5
+    cluster_delta_4: 0.8
+    cluster_delta_2: 0.5
+    graph_resolution_skip_final_identity: False
+    spatial_stage_loss_weights: []
+  FORWARD_FEATURES: [0, 1, 2, 3]
+  TARGET_FEATURES: [0]
+TRAIN:
+  LOSS: masked_mae
+  OPTIM:
+    TYPE: Adam
+    PARAM:
+      lr: 0.002
+      weight_decay: 0.0001
+  LR_SCHEDULER:
+    TYPE: MultiStepLR
+    PARAM:
+      milestones: [1, 35, 60, 80, 95]
+      gamma: 0.5
+  NUM_EPOCHS: 100
+  CKPT_SAVE_DIR: checkpoints/pems04_unified_aux/h32/GR7_final_spatial_only/seed1
+  DATA:
+    DIR: datasets/PEMS04
+    BATCH_SIZE: 32
+    PREFETCH: False
+    SHUFFLE: True
+    NUM_WORKERS: 2
+    PIN_MEMORY: False
+  NULL_VAL: 0.0
+VAL:
+  INTERVAL: 1
+  DATA:
+    DIR: datasets/PEMS04
+    BATCH_SIZE: 32
+    PREFETCH: False
+    SHUFFLE: False
+    NUM_WORKERS: 2
+    PIN_MEMORY: False
+TEST:
+  INTERVAL: 1
+  DATA:
+    DIR: datasets/PEMS04
+    BATCH_SIZE: 32
+    PREFETCH: False
+    SHUFFLE: False
+    NUM_WORKERS: 2
+    PIN_MEMORY: False
+
+train len: 10167
+val len: 3389
+test len: 3389
+  0%|          | 0/318 [00:00<?, ?it/s]  0%|          | 1/318 [00:00<04:15,  1.24it/s]  1%|          | 3/318 [00:00<01:21,  3.88it/s]  2%|▏         | 5/318 [00:01<00:50,  6.16it/s]  2%|▏         | 7/318 [00:01<00:38,  8.05it/s]  3%|▎         | 9/318 [00:01<00:32,  9.59it/s]  3%|▎         | 11/318 [00:01<00:28, 10.72it/s]  4%|▍         | 13/318 [00:01<00:26, 11.64it/s]  5%|▍         | 15/318 [00:01<00:25, 12.09it/s]  5%|▌         | 17/318 [00:01<00:24, 12.54it/s]  6%|▌         | 19/318 [00:02<00:23, 12.92it/s]  7%|▋         | 21/318 [00:02<00:22, 13.04it/s]  7%|▋         | 23/318 [00:02<00:22, 13.08it/s]  8%|▊         | 25/318 [00:02<00:22, 13.31it/s]  8%|▊         | 27/318 [00:02<00:21, 13.28it/s]  9%|▉         | 29/318 [00:02<00:21, 13.41it/s] 10%|▉         | 31/318 [00:02<00:21, 13.43it/s] 10%|█         | 33/318 [00:03<00:21, 13.56it/s] 11%|█         | 35/318 [00:03<00:20, 13.66it/s] 12%|█▏        | 37/318 [00:03<00:20, 13.66it/s] 12%|█▏        | 39/318 [00:03<00:20, 13.76it/s] 13%|█▎        | 41/318 [00:03<00:20, 13.77it/s] 14%|█▎        | 43/318 [00:03<00:20, 13.66it/s] 14%|█▍        | 45/318 [00:04<00:19, 13.84it/s] 15%|█▍        | 47/318 [00:04<00:20, 13.51it/s] 15%|█▌        | 49/318 [00:04<00:19, 13.62it/s] 16%|█▌        | 51/318 [00:04<00:19, 13.55it/s] 17%|█▋        | 53/318 [00:04<00:19, 13.54it/s] 17%|█▋        | 55/318 [00:04<00:19, 13.60it/s] 18%|█▊        | 57/318 [00:04<00:19, 13.60it/s] 19%|█▊        | 59/318 [00:05<00:19, 13.58it/s] 19%|█▉        | 61/318 [00:05<00:19, 13.30it/s] 20%|█▉        | 63/318 [00:05<00:19, 13.39it/s] 20%|██        | 65/318 [00:05<00:19, 13.22it/s] 21%|██        | 67/318 [00:05<00:18, 13.27it/s] 22%|██▏       | 69/318 [00:05<00:18, 13.21it/s] 22%|██▏       | 71/318 [00:05<00:18, 13.13it/s] 23%|██▎       | 73/318 [00:06<00:18, 13.18it/s] 24%|██▎       | 75/318 [00:06<00:18, 13.24it/s] 24%|██▍       | 77/318 [00:06<00:17, 13.41it/s] 25%|██▍       | 79/318 [00:06<00:17, 13.52it/s] 25%|██▌       | 81/318 [00:06<00:17, 13.51it/s] 26%|██▌       | 83/318 [00:06<00:17, 13.58it/s] 27%|██▋       | 85/318 [00:06<00:17, 13.63it/s] 27%|██▋       | 87/318 [00:07<00:17, 13.44it/s] 28%|██▊       | 89/318 [00:07<00:16, 13.51it/s] 29%|██▊       | 91/318 [00:07<00:16, 13.58it/s] 29%|██▉       | 93/318 [00:07<00:16, 13.60it/s] 30%|██▉       | 95/318 [00:07<00:16, 13.57it/s] 31%|███       | 97/318 [00:07<00:16, 13.50it/s] 31%|███       | 99/318 [00:08<00:16, 13.33it/s] 32%|███▏      | 101/318 [00:08<00:16, 13.36it/s] 32%|███▏      | 103/318 [00:08<00:15, 13.54it/s] 33%|███▎      | 105/318 [00:08<00:15, 13.47it/s] 34%|███▎      | 107/318 [00:08<00:15, 13.55it/s] 34%|███▍      | 109/318 [00:08<00:15, 13.63it/s] 35%|███▍      | 111/318 [00:08<00:15, 13.54it/s] 36%|███▌      | 113/318 [00:09<00:15, 13.56it/s] 36%|███▌      | 115/318 [00:09<00:14, 13.60it/s] 37%|███▋      | 117/318 [00:09<00:14, 13.49it/s] 37%|███▋      | 119/318 [00:09<00:14, 13.46it/s] 38%|███▊      | 121/318 [00:09<00:14, 13.45it/s] 39%|███▊      | 123/318 [00:09<00:14, 13.52it/s] 39%|███▉      | 125/318 [00:09<00:14, 13.31it/s] 40%|███▉      | 127/318 [00:10<00:14, 13.21it/s] 41%|████      | 129/318 [00:10<00:14, 13.36it/s] 41%|████      | 131/318 [00:10<00:14, 13.35it/s] 42%|████▏     | 133/318 [00:10<00:13, 13.50it/s] 42%|████▏     | 135/318 [00:10<00:13, 13.57it/s] 43%|████▎     | 137/318 [00:10<00:13, 13.65it/s] 44%|████▎     | 139/318 [00:10<00:13, 13.62it/s] 44%|████▍     | 141/318 [00:11<00:13, 13.59it/s] 45%|████▍     | 143/318 [00:11<00:12, 13.68it/s] 46%|████▌     | 145/318 [00:11<00:12, 13.72it/s] 46%|████▌     | 147/318 [00:11<00:12, 13.76it/s] 47%|████▋     | 149/318 [00:11<00:12, 13.79it/s] 47%|████▋     | 151/318 [00:11<00:12, 13.74it/s] 48%|████▊     | 153/318 [00:12<00:12, 13.66it/s] 49%|████▊     | 155/318 [00:12<00:11, 13.65it/s] 49%|████▉     | 157/318 [00:12<00:11, 13.72it/s] 50%|█████     | 159/318 [00:12<00:11, 13.84it/s] 51%|█████     | 161/318 [00:12<00:11, 13.72it/s] 51%|█████▏    | 163/318 [00:12<00:11, 13.62it/s] 52%|█████▏    | 165/318 [00:12<00:11, 13.49it/s] 53%|█████▎    | 167/318 [00:13<00:11, 13.40it/s] 53%|█████▎    | 169/318 [00:13<00:11, 13.41it/s] 54%|█████▍    | 171/318 [00:13<00:10, 13.43it/s] 54%|█████▍    | 173/318 [00:13<00:10, 13.47it/s] 55%|█████▌    | 175/318 [00:13<00:10, 13.55it/s] 56%|█████▌    | 177/318 [00:13<00:10, 13.38it/s] 56%|█████▋    | 179/318 [00:13<00:10, 13.43it/s] 57%|█████▋    | 181/318 [00:14<00:10, 13.47it/s] 58%|█████▊    | 183/318 [00:14<00:10, 13.42it/s] 58%|█████▊    | 185/318 [00:14<00:09, 13.47it/s] 59%|█████▉    | 187/318 [00:14<00:09, 13.53it/s] 59%|█████▉    | 189/318 [00:14<00:09, 13.53it/s] 60%|██████    | 191/318 [00:14<00:09, 13.55it/s] 61%|██████    | 193/318 [00:14<00:09, 13.54it/s] 61%|██████▏   | 195/318 [00:15<00:09, 13.57it/s] 62%|██████▏   | 197/318 [00:15<00:08, 13.63it/s] 63%|██████▎   | 199/318 [00:15<00:08, 13.46it/s] 63%|██████▎   | 201/318 [00:15<00:08, 13.55it/s] 64%|██████▍   | 203/318 [00:15<00:08, 13.57it/s] 64%|██████▍   | 205/318 [00:15<00:08, 13.61it/s] 65%|██████▌   | 207/318 [00:16<00:08, 13.59it/s] 66%|██████▌   | 209/318 [00:16<00:08, 13.52it/s] 66%|██████▋   | 211/318 [00:16<00:07, 13.68it/s] 67%|██████▋   | 213/318 [00:16<00:07, 13.48it/s] 68%|██████▊   | 215/318 [00:16<00:07, 13.48it/s] 68%|██████▊   | 217/318 [00:16<00:07, 13.46it/s] 69%|██████▉   | 219/318 [00:16<00:07, 13.31it/s] 69%|██████▉   | 221/318 [00:17<00:07, 13.52it/s] 70%|███████   | 223/318 [00:17<00:06, 13.58it/s] 71%|███████   | 225/318 [00:17<00:06, 13.51it/s] 71%|███████▏  | 227/318 [00:17<00:06, 13.47it/s] 72%|███████▏  | 229/318 [00:17<00:06, 13.59it/s] 73%|███████▎  | 231/318 [00:17<00:06, 13.64it/s] 73%|███████▎  | 233/318 [00:17<00:06, 13.56it/s] 74%|███████▍  | 235/318 [00:18<00:06, 13.46it/s] 75%|███████▍  | 237/318 [00:18<00:06, 13.43it/s] 75%|███████▌  | 239/318 [00:18<00:05, 13.37it/s] 76%|███████▌  | 241/318 [00:18<00:05, 13.55it/s] 76%|███████▋  | 243/318 [00:18<00:05, 13.61it/s] 77%|███████▋  | 245/318 [00:18<00:05, 13.68it/s] 78%|███████▊  | 247/318 [00:18<00:05, 13.63it/s] 78%|███████▊  | 249/318 [00:19<00:05, 13.42it/s] 79%|███████▉  | 251/318 [00:19<00:05, 13.38it/s] 80%|███████▉  | 253/318 [00:19<00:04, 13.42it/s] 80%|████████  | 255/318 [00:19<00:04, 13.49it/s] 81%|████████  | 257/318 [00:19<00:04, 13.62it/s] 81%|████████▏ | 259/318 [00:19<00:04, 13.43it/s] 82%|████████▏ | 261/318 [00:19<00:04, 13.54it/s] 83%|████████▎ | 263/318 [00:20<00:04, 13.40it/s] 83%|████████▎ | 265/318 [00:20<00:03, 13.59it/s] 84%|████████▍ | 267/318 [00:20<00:03, 13.36it/s] 85%|████████▍ | 269/318 [00:20<00:03, 13.36it/s] 85%|████████▌ | 271/318 [00:20<00:03, 13.39it/s] 86%|████████▌ | 273/318 [00:20<00:03, 13.48it/s] 86%|████████▋ | 275/318 [00:21<00:03, 13.45it/s] 87%|████████▋ | 277/318 [00:21<00:03, 13.56it/s] 88%|████████▊ | 279/318 [00:21<00:02, 13.38it/s] 88%|████████▊ | 281/318 [00:21<00:02, 13.39it/s] 89%|████████▉ | 283/318 [00:21<00:02, 13.46it/s] 90%|████████▉ | 285/318 [00:21<00:02, 13.57it/s] 90%|█████████ | 287/318 [00:21<00:02, 13.46it/s] 91%|█████████ | 289/318 [00:22<00:02, 13.42it/s] 92%|█████████▏| 291/318 [00:22<00:02, 13.34it/s] 92%|█████████▏| 293/318 [00:22<00:01, 13.47it/s] 93%|█████████▎| 295/318 [00:22<00:01, 13.65it/s] 93%|█████████▎| 297/318 [00:22<00:01, 13.61it/s] 94%|█████████▍| 299/318 [00:22<00:01, 13.57it/s] 95%|█████████▍| 301/318 [00:22<00:01, 13.62it/s] 95%|█████████▌| 303/318 [00:23<00:01, 13.63it/s] 96%|█████████▌| 305/318 [00:23<00:00, 13.73it/s] 97%|█████████▋| 307/318 [00:23<00:00, 13.67it/s] 97%|█████████▋| 309/318 [00:23<00:00, 13.51it/s] 98%|█████████▊| 311/318 [00:23<00:00, 13.59it/s] 98%|█████████▊| 313/318 [00:23<00:00, 13.52it/s] 99%|█████████▉| 315/318 [00:24<00:00, 13.38it/s]100%|█████████▉| 317/318 [00:24<00:00, 13.76it/s]100%|██████████| 318/318 [00:24<00:00, 13.05it/s]
+2026-07-17 20:49:30,674 - easytorch-training - INFO - Result <train>: [train_time: 24.37 (s), lr: 2.00e-03, train_MAE: 41.2546, train_RMSE: 59.2602, train_MAPE: 0.4176]
+2026-07-17 20:49:30,675 - easytorch-training - INFO - Start validation.
+  0%|          | 0/106 [00:00<?, ?it/s]  1%|          | 1/106 [00:00<00:11,  9.52it/s]  5%|▍         | 5/106 [00:00<00:03, 25.52it/s]  8%|▊         | 9/106 [00:00<00:03, 31.04it/s] 12%|█▏        | 13/106 [00:00<00:02, 33.73it/s] 16%|█▌        | 17/106 [00:00<00:02, 35.21it/s] 20%|█▉        | 21/106 [00:00<00:02, 36.14it/s] 24%|██▎       | 25/106 [00:00<00:02, 36.74it/s] 27%|██▋       | 29/106 [00:00<00:02, 37.13it/s] 31%|███       | 33/106 [00:00<00:01, 37.41it/s] 35%|███▍      | 37/106 [00:01<00:01, 37.61it/s] 39%|███▊      | 41/106 [00:01<00:01, 37.74it/s] 42%|████▏     | 45/106 [00:01<00:01, 37.85it/s] 46%|████▌     | 49/106 [00:01<00:01, 37.88it/s] 50%|█████     | 53/106 [00:01<00:01, 37.91it/s] 54%|█████▍    | 57/106 [00:01<00:01, 37.89it/s] 58%|█████▊    | 61/106 [00:01<00:01, 37.94it/s] 61%|██████▏   | 65/106 [00:01<00:01, 37.79it/s] 65%|██████▌   | 69/106 [00:01<00:00, 37.72it/s] 69%|██████▉   | 73/106 [00:02<00:00, 37.72it/s] 73%|███████▎  | 77/106 [00:02<00:00, 37.43it/s] 76%|███████▋  | 81/106 [00:02<00:00, 37.30it/s] 80%|████████  | 85/106 [00:02<00:00, 37.52it/s] 84%|████████▍ | 89/106 [00:02<00:00, 37.50it/s] 88%|████████▊ | 93/106 [00:02<00:00, 37.66it/s] 92%|█████████▏| 97/106 [00:02<00:00, 37.78it/s] 95%|█████████▌| 101/106 [00:02<00:00, 37.87it/s] 99%|█████████▉| 105/106 [00:02<00:00, 37.96it/s]100%|██████████| 106/106 [00:02<00:00, 35.78it/s]
+2026-07-17 20:49:33,640 - easytorch-training - INFO - Result <val>: [val_time: 2.96 (s), val_MAE: 30.3473, val_RMSE: 43.8981, val_MAPE: 0.2215]
+2026-07-17 20:49:33,809 - easytorch-training - INFO - Checkpoint checkpoints/pems04_unified_aux/h32/GR7_final_spatial_only/seed1/be93ebae08290f0d891ae6eea91d31d8/ChainForecasting_best_val_MAE.pt saved
+2026-07-17 20:49:33,809 - easytorch-training - INFO - [UnifiedValDiag epoch=1] MAE_temporal_final=32.9714 MAE_before_graph=32.9714 graph_stage_MAE=[30.3473] MAE_final=30.3473 mean_abs_cluster_residual=[0.07232] mean_abs_lifted_residual=[0.07232] A_cluster_density=0.000000 A_adp_density=0.000000 mean_abs_diff_cluster_vs_adp=0.000000
+2026-07-17 20:49:36,356 - easytorch-training - ERROR - Traceback (most recent call last):
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 31, in training_func
+    runner.train(cfg)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/core/runner.py", line 349, in train
+    self.on_epoch_end(epoch)
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 661, in on_epoch_end
+    super().on_epoch_end(epoch)
+  File "/home/dhz/KASA-ST/basicts/runners/base_runner.py", line 148, in on_epoch_end
+    self.test_process(train_epoch=epoch)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/utils/dist.py", line 102, in wrapper
+    return func(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/runners/base_runner.py", line 174, in test_process
+    self.test()
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/utils/dist.py", line 102, in wrapper
+    return func(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 802, in test
+    forward_return = self.forward(data, epoch=None, iter_num=None, train=False)
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 170, in forward
+    out = self.model(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 799, in forward
+    else self._forward_chain(history_data)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 651, in _forward_chain
+    t_k = step(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/kasa_temporal_step.py", line 224, in forward
+    downsamp_encoder(downsamp_input, spatial_codebook=spatial_codebook)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/downsamp_emb.py", line 56, in forward
+    future_time_idx = ((time_in_day_data[:, -1, -1, :] * self.td_size + self.output_len) % self.td_size).long()
+KeyboardInterrupt
+
+Traceback (most recent call last):
+  File "/home/dhz/KASA-ST/examples/run.py", line 88, in <module>
+    main()
+  File "/home/dhz/KASA-ST/examples/run.py", line 84, in main
+    launch_training(args.cfg, devices)
+  File "/home/dhz/KASA-ST/basicts/launcher.py", line 23, in launch_training
+    easytorch.launch_training(cfg=cfg, devices=gpus, node_rank=node_rank)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 86, in launch_training
+    train_dist(cfg)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 35, in training_func
+    raise e
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/launcher/launcher.py", line 31, in training_func
+    runner.train(cfg)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/core/runner.py", line 349, in train
+    self.on_epoch_end(epoch)
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 661, in on_epoch_end
+    super().on_epoch_end(epoch)
+  File "/home/dhz/KASA-ST/basicts/runners/base_runner.py", line 148, in on_epoch_end
+    self.test_process(train_epoch=epoch)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/utils/dist.py", line 102, in wrapper
+    return func(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/runners/base_runner.py", line 174, in test_process
+    self.test()
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/easytorch/utils/dist.py", line 102, in wrapper
+    return func(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 802, in test
+    forward_return = self.forward(data, epoch=None, iter_num=None, train=False)
+  File "/home/dhz/KASA-ST/basicts/runners/runner_zoo/chain_forecasting_runner.py", line 170, in forward
+    out = self.model(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 799, in forward
+    else self._forward_chain(history_data)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/ChainForecasting_arch.py", line 651, in _forward_chain
+    t_k = step(
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/kasa_temporal_step.py", line 224, in forward
+    downsamp_encoder(downsamp_input, spatial_codebook=spatial_codebook)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/dhz/miniconda3/envs/basicts/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/dhz/KASA-ST/basicts/archs/arch_zoo/ChainForecasting_arch/downsamp_emb.py", line 56, in forward
+    future_time_idx = ((time_in_day_data[:, -1, -1, :] * self.td_size + self.output_len) % self.td_size).long()
+KeyboardInterrupt

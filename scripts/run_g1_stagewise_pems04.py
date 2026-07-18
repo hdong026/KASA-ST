@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GR7 stagewise training on PeMS04 (16/32/64 horizons)."""
+"""G1 stagewise training on PeMS04 (16/32/64 horizons, T1->T2->T3->S1)."""
 from __future__ import annotations
 
 import argparse
@@ -14,9 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from basicts.runners.stagewise_training import (  # noqa: E402
-    ALL_STAGE_CHOICES,
-    STAGE_SEQUENCES,
+from basicts.runners.g1_stagewise_training import (  # noqa: E402
+    G1_STAGE_CHOICES,
+    G1_STAGE_ORDER,
     default_stage_ckpt_path,
     resolve_load_checkpoint,
     stage_best_ckpt_name,
@@ -26,23 +26,18 @@ RUN_PY = ROOT / "examples" / "run.py"
 DEFAULT_HORIZONS = [16, 32, 64]
 DEFAULT_SEEDS = [1]
 DEFAULT_GPUS = ["0"]
-DEFAULT_STAGE_SEQUENCE = "full"
 
 STAGE_EPOCHS: dict[str, int] = {
     "T1": 30,
     "T2": 40,
     "T3": 80,
-    "S14": 20,
-    "S12": 30,
     "S1": 40,
 }
 
 STAGE_MILESTONES: dict[str, list[int]] = {
     "T1": [1, 15, 25],
     "T2": [1, 20, 32],
-    "T3": [1, 40, 64],
-    "S14": [1, 10, 16],
-    "S12": [1, 15, 25],
+    "T3": [1, 40, 65],
     "S1": [1, 20, 32],
 }
 
@@ -61,81 +56,19 @@ HORIZON_CONFIGS: dict[int, dict[str, Any]] = {
     },
 }
 
-GR7_STAGEWISE_PARAM: dict[str, Any] = {
-    "variant_name": "GR7_stagewise",
-    "spatial_placement": "temporal_first_graph_resolution",
+G1_STAGEWISE_PARAM: dict[str, Any] = {
+    "variant_name": "G1_stagewise",
+    "base_variant": "G1_final_adaptive",
+    "spatial_placement": "final",
     "post_spatial_mode": "adaptive_only",
-    "graph_resolution_ratios": [0.25, 0.50, 1.00],
-    "graph_resolution_topks": [4, 8, 16],
-    "graph_resolution_alphas": [0.03, 0.06, 0.10],
-    "graph_resolution_betas": [1.0, 1.0, 1.0],
-    "graph_resolution_rhos": [0.25, 0.50, 1.00],
-    "graph_cluster_method": "current",
-    "clustering_seed": 0,
-    "dataset_name": "PEMS04",
-    "cluster_road_distance_path": "datasets/raw_data/PEMS04/adj_PEMS04_distance.pkl",
-    "cluster_sigma_d": 0.5,
-    "cluster_delta_4": 0.8,
-    "cluster_delta_2": 0.5,
-    "graph_resolution_skip_final_identity": False,
     "unified_aux_loss_mode": "none",
-    "spatial_stage_loss_weights": [0.0, 0.0, 0.0],
+    "use_prev_condition": True,
+    "use_extra_prior_input": False,
     "spatial_graph_loss_weights": [0.0, 0.0, 0.0],
-    "use_extra_prior_input": False,
 }
 
-GR7_STAGEWISE_FINAL_SPATIAL_ONLY_PARAM: dict[str, Any] = {
-    "variant_name": "GR7_stagewise_final_spatial_only",
-    "spatial_placement": "temporal_first_graph_resolution",
-    "post_spatial_mode": "adaptive_only",
-    "graph_resolution_ratios": [1.0],
-    "graph_resolution_topks": [16],
-    "graph_resolution_alphas": [0.10],
-    "graph_resolution_betas": [1.0],
-    "graph_resolution_rhos": [1.0],
-    "graph_cluster_method": "current",
-    "clustering_seed": 0,
-    "dataset_name": "PEMS04",
-    "cluster_road_distance_path": "datasets/raw_data/PEMS04/adj_PEMS04_distance.pkl",
-    "cluster_sigma_d": 0.5,
-    "cluster_delta_4": 0.8,
-    "cluster_delta_2": 0.5,
-    "graph_resolution_skip_final_identity": False,
-    "unified_aux_loss_mode": "none",
-    "spatial_stage_loss_weights": [],
-    "spatial_graph_loss_weights": [],
-    "use_extra_prior_input": False,
-}
-
-SEQUENCE_PROFILES: dict[str, dict[str, Any]] = {
-    "full": {
-        "variant_name": "GR7_stagewise",
-        "model_param": GR7_STAGEWISE_PARAM,
-        "work_dir": ROOT / "experiments" / "gr7_stagewise",
-        "ckpt_root": ROOT / "checkpoints" / "gr7_stagewise",
-        "config_prefix": "GR7_stagewise",
-        "ckpt_rel_prefix": "gr7_stagewise",
-        "milestones_override": {},
-    },
-    "no_s14": {
-        "variant_name": "GR7_stagewise",
-        "model_param": GR7_STAGEWISE_PARAM,
-        "work_dir": ROOT / "experiments" / "gr7_stagewise",
-        "ckpt_root": ROOT / "checkpoints" / "gr7_stagewise",
-        "config_prefix": "GR7_stagewise",
-        "ckpt_rel_prefix": "gr7_stagewise",
-        "milestones_override": {},
-    },
-    "final_spatial_only": {
-        "variant_name": "GR7_stagewise_final_spatial_only",
-        "model_param": GR7_STAGEWISE_FINAL_SPATIAL_ONLY_PARAM,
-        "work_dir": ROOT / "experiments" / "gr7_stagewise_final_spatial_only",
-        "ckpt_root": ROOT / "checkpoints" / "gr7_stagewise_final_spatial_only",
-        "config_prefix": "GR7_stagewise_final_spatial_only",
-        "ckpt_rel_prefix": "gr7_stagewise_final_spatial_only",
-        "milestones_override": {"T3": [1, 40, 65]},
-    },
-}
+WORK_DIR = ROOT / "experiments" / "g1_stagewise"
+CKPT_ROOT = ROOT / "checkpoints" / "g1_stagewise"
 
 
 def dataset_num_channels(dataset_name: str = "PEMS04") -> int:
@@ -161,34 +94,23 @@ def _py_literal(v: Any) -> str:
     return str(v)
 
 
-def get_sequence_profile(stage_sequence: str) -> dict[str, Any]:
-    return SEQUENCE_PROFILES.get(stage_sequence, SEQUENCE_PROFILES["full"])
-
-
 def stage_num_epochs(stage: str, override: int | None) -> int:
     if override is not None:
         return int(override)
     return STAGE_EPOCHS[str(stage).upper()]
 
 
-def stage_milestones(stage: str, stage_sequence: str) -> list[int]:
-    stage = str(stage).upper()
-    profile = get_sequence_profile(stage_sequence)
-    overrides = profile.get("milestones_override") or {}
-    if stage in overrides:
-        return list(overrides[stage])
-    return list(STAGE_MILESTONES[stage])
+def stage_milestones(stage: str) -> list[int]:
+    return list(STAGE_MILESTONES[str(stage).upper()])
 
 
 def resolve_stage_list(
     run_stagewise_all: bool,
     stage: str | None,
     stages: list[str] | None,
-    stage_sequence: str,
 ) -> list[str]:
     if run_stagewise_all:
-        seq = stage_sequence if stage_sequence in STAGE_SEQUENCES else DEFAULT_STAGE_SEQUENCE
-        return list(STAGE_SEQUENCES[seq])
+        return list(G1_STAGE_ORDER)
     if stages:
         return [str(s).upper() for s in stages]
     if stage:
@@ -200,48 +122,41 @@ def generate_stage_config(
     horizon: int,
     stage: str,
     seed: int,
-    profile: dict[str, Any],
     num_epochs: int | None,
     freeze_previous: bool,
     detach_previous: bool,
-    stage_sequence: str,
     load_checkpoint: str | None,
     save_checkpoint: str | None,
+    work_dir: Path,
+    ckpt_root: Path,
 ) -> Path:
     stage = str(stage).upper()
-    if stage == "FT":
-        raise ValueError("FT stage is disabled in GR7_stagewise default workflow.")
-    if stage_sequence == "final_spatial_only" and stage in {"S14", "S12"}:
-        raise ValueError(f"Stage {stage} is not used in final_spatial_only sequence.")
+    if stage not in G1_STAGE_CHOICES:
+        raise ValueError(f"Invalid G1 stagewise stage: {stage}")
 
-    model_param = dict(profile["model_param"])
-    work_dir = Path(profile["work_dir"])
-    ckpt_root = Path(profile["ckpt_root"])
-    config_prefix = profile["config_prefix"]
-    ckpt_rel_prefix = profile["ckpt_rel_prefix"]
-
+    model_param = dict(G1_STAGEWISE_PARAM)
     hspec = HORIZON_CONFIGS[horizon]
     base_cfg = hspec["base_cfg"]
     content = base_cfg.read_text(encoding="utf-8")
     epochs = stage_num_epochs(stage, num_epochs)
-    milestones = stage_milestones(stage, stage_sequence)
+    milestones = stage_milestones(stage)
 
     if not load_checkpoint:
-        load_checkpoint = resolve_load_checkpoint(
-            stage, str(ckpt_root), horizon, seed, sequence=stage_sequence
-        )
+        load_checkpoint = resolve_load_checkpoint(stage, str(ckpt_root), horizon, seed)
     if not save_checkpoint:
         save_checkpoint = default_stage_ckpt_path(str(ckpt_root), horizon, seed, stage)
 
-    num_channels = dataset_num_channels(model_param["dataset_name"])
+    num_channels = dataset_num_channels("PEMS04")
     use_prior = bool(model_param.get("use_extra_prior_input", False))
     forward_features, input_dim = resolve_input_channels(use_prior, num_channels)
 
-    ckpt_rel = os.path.join("checkpoints", ckpt_rel_prefix, f"h{horizon}", stage, f"seed{seed}")
+    ckpt_rel = os.path.join("checkpoints", "g1_stagewise", f"H{horizon}", f"seed{seed}", stage)
     variant_name = model_param["variant_name"]
     lines = [
         "",
-        f"# ===== {config_prefix} overrides (auto-generated) =====",
+        "# ===== G1_stagewise overrides (auto-generated) =====",
+        "from basicts.runners import G1StagewiseRunner",
+        "CFG.RUNNER = G1StagewiseRunner",
         f"CFG.ENV.SEED = {seed}",
         f"CFG.TRAIN.NUM_EPOCHS = {epochs}",
         f'CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("{ckpt_rel}")',
@@ -255,6 +170,7 @@ def generate_stage_config(
     lines.append(f'CFG.MODEL.PARAM["chain_lengths"] = {_py_literal(hspec["chain_lengths"])}')
     lines.append('CFG.MODEL.PARAM["chain_loss_weights"] = [0.0, 0.0, 0.0]')
     lines.append('CFG.TRAIN.OPTIM.PARAM["lr"] = 0.002')
+    lines.append(f"CFG.TEST.EVALUATION_HORIZONS = list(range(1, {horizon + 1}))")
     lines.extend(
         [
             f'CFG.TRAIN.LR_SCHEDULER.PARAM["milestones"] = {_py_literal(milestones)}',
@@ -263,9 +179,10 @@ def generate_stage_config(
             f"CFG.TRAIN.STAGEWISE.stage = {_py_literal(stage)}",
             f"CFG.TRAIN.STAGEWISE.freeze_previous = {_py_literal(freeze_previous)}",
             f"CFG.TRAIN.STAGEWISE.detach_previous = {_py_literal(detach_previous)}",
-            f"CFG.TRAIN.STAGEWISE.stage_sequence = {_py_literal(stage_sequence)}",
+            'CFG.TRAIN.STAGEWISE.stage_sequence = "g1"',
             "CFG.TRAIN.STAGEWISE.train_shared_temporal = True",
             f"CFG.TRAIN.STAGEWISE.variant_name = {_py_literal(variant_name)}",
+            f"CFG.TRAIN.STAGEWISE.base_variant = {_py_literal(model_param['base_variant'])}",
             f"CFG.TRAIN.STAGEWISE.ckpt_root = {_py_literal(str(ckpt_root))}",
             f"CFG.TRAIN.STAGEWISE.load_checkpoint = {_py_literal(load_checkpoint)}",
             f"CFG.TRAIN.STAGEWISE.save_checkpoint = {_py_literal(save_checkpoint)}",
@@ -274,11 +191,21 @@ def generate_stage_config(
 
     out_dir = work_dir / "configs"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"h{horizon}_{config_prefix}_{stage}_seed{seed}.py"
+    out_path = out_dir / f"h{horizon}_G1_stagewise_{stage}_seed{seed}.py"
     if "from easydict import EasyDict" not in content:
         content = "from easydict import EasyDict\n" + content
     out_path.write_text(content + "\n".join(lines) + "\n", encoding="utf-8")
     return out_path
+
+
+def stage_completed(
+    horizon: int,
+    seed: int,
+    stage: str,
+    ckpt_root: Path,
+) -> bool:
+    ckpt = ckpt_root / f"H{horizon}" / f"seed{seed}" / stage_best_ckpt_name(stage)
+    return ckpt.is_file()
 
 
 def run_stage(
@@ -286,68 +213,72 @@ def run_stage(
     stage: str,
     seed: int,
     gpu: str,
-    profile: dict[str, Any],
     num_epochs: int | None,
     freeze_previous: bool,
     detach_previous: bool,
-    stage_sequence: str,
     load_checkpoint: str | None,
     save_checkpoint: str | None,
+    work_dir: Path,
+    ckpt_root: Path,
     dry_run: bool,
-) -> None:
-    ckpt_root = Path(profile["ckpt_root"])
+    skip_existing: bool,
+    show_errors: bool,
+) -> int:
+    if skip_existing and stage_completed(horizon, seed, stage, ckpt_root):
+        print(
+            f"[skip] G1_stagewise h{horizon} stage={stage} seed={seed} "
+            f"(exists: {ckpt_root / f'H{horizon}' / f'seed{seed}' / stage_best_ckpt_name(stage)})"
+        )
+        return 0
+
     cfg_path = generate_stage_config(
         horizon=horizon,
         stage=stage,
         seed=seed,
-        profile=profile,
         num_epochs=num_epochs,
         freeze_previous=freeze_previous,
         detach_previous=detach_previous,
-        stage_sequence=stage_sequence,
         load_checkpoint=load_checkpoint,
         save_checkpoint=save_checkpoint,
+        work_dir=work_dir,
+        ckpt_root=ckpt_root,
     )
     rel_cfg = cfg_path.relative_to(ROOT)
     cmd = [sys.executable, str(RUN_PY), "--cfg", str(rel_cfg), "--gpus", "0"]
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu)
     epochs = stage_num_epochs(stage, num_epochs)
-    milestones = stage_milestones(stage, stage_sequence)
-    load_path = load_checkpoint or resolve_load_checkpoint(
-        stage, str(ckpt_root), horizon, seed, sequence=stage_sequence
-    )
+    milestones = stage_milestones(stage)
+    load_path = load_checkpoint or resolve_load_checkpoint(stage, str(ckpt_root), horizon, seed)
     save_path = save_checkpoint or default_stage_ckpt_path(str(ckpt_root), horizon, seed, stage)
-    print(f"\n=== {profile['variant_name']} h{horizon} stage={stage} seed={seed} GPU={gpu} ===")
-    print(f"stage_sequence={stage_sequence}")
+    print(f"\n=== G1_stagewise h{horizon} stage={stage} seed={seed} GPU={gpu} ===")
+    print("base_variant=G1_final_adaptive stage_sequence=T1->T2->T3->S1")
     print(f"epochs={epochs} lr=0.002 milestones={milestones}")
+    print(f"evaluation_horizons=1..{horizon}")
     print(f"config: {cfg_path}")
     print(f"load: {load_path}")
     print(f"save_best: {save_path} ({stage_best_ckpt_name(stage)})")
     print("cmd:", " ".join(cmd))
     if dry_run:
-        return
-    subprocess.run(cmd, cwd=str(ROOT), env=env, check=True)
+        return 0
+    proc = subprocess.run(cmd, cwd=str(ROOT), env=env, check=False)
+    if proc.returncode != 0:
+        msg = f"G1_stagewise h{horizon} stage={stage} seed={seed} failed (exit={proc.returncode})"
+        if show_errors:
+            raise SystemExit(msg)
+        print(f"[error] {msg}")
+        return proc.returncode
+    return 0
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="GR7 stagewise training on PeMS04")
+    p = argparse.ArgumentParser(description="G1 stagewise training on PeMS04 (T1->T2->T3->S1)")
     p.add_argument("--horizons", nargs="+", type=int, default=DEFAULT_HORIZONS)
     p.add_argument("--seeds", nargs="+", type=int, default=DEFAULT_SEEDS)
     p.add_argument("--gpus", nargs="+", default=DEFAULT_GPUS)
-    p.add_argument("--stage", choices=ALL_STAGE_CHOICES, default=None)
-    p.add_argument("--stages", nargs="+", choices=ALL_STAGE_CHOICES, default=None)
+    p.add_argument("--stage", choices=G1_STAGE_CHOICES, default=None)
+    p.add_argument("--stages", nargs="+", choices=G1_STAGE_CHOICES, default=None)
     p.add_argument("--run_stagewise_all", action="store_true")
-    p.add_argument(
-        "--stage_sequence",
-        choices=list(STAGE_SEQUENCES.keys()),
-        default=DEFAULT_STAGE_SEQUENCE,
-        help=(
-            "full: T1->T2->T3->S14->S12->S1; "
-            "no_s14: T1->T2->T3->S12->S1; "
-            "final_spatial_only: T1->T2->T3->S1"
-        ),
-    )
     p.add_argument("--load_checkpoint", default=None)
     p.add_argument("--save_checkpoint", default=None)
     p.add_argument("--freeze_previous", action=argparse.BooleanOptionalAction, default=True)
@@ -356,46 +287,24 @@ def parse_args() -> argparse.Namespace:
         "--num_epochs",
         type=int,
         default=None,
-        help="Override per-stage default epochs (T1=30,T2=40,T3=80,S14=20,S12=30,S1=40)",
+        help="Override per-stage default epochs (T1=30,T2=40,T3=80,S1=40)",
     )
-    p.add_argument(
-        "--work_dir",
-        type=Path,
-        default=None,
-        help="Override work dir (default depends on stage_sequence profile)",
-    )
-    p.add_argument(
-        "--ckpt_root",
-        type=Path,
-        default=None,
-        help="Override checkpoint root (default depends on stage_sequence profile)",
-    )
+    p.add_argument("--work_dir", type=Path, default=WORK_DIR)
+    p.add_argument("--ckpt_root", type=Path, default=CKPT_ROOT)
     p.add_argument("--dry_run", action="store_true")
+    p.add_argument("--skip_existing", action="store_true")
+    p.add_argument("--show_errors", action="store_true")
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    stages = resolve_stage_list(
-        args.run_stagewise_all,
-        args.stage,
-        args.stages,
-        args.stage_sequence,
-    )
-    if "FT" in stages and args.run_stagewise_all:
-        raise SystemExit("--run_stagewise_all no longer includes FT. Use --stage FT manually if needed.")
-    if args.stage_sequence == "final_spatial_only":
-        invalid = [s for s in stages if s in {"S14", "S12", "FT"}]
-        if invalid:
-            raise SystemExit(f"final_spatial_only cannot run stages: {invalid}")
-
-    profile = dict(get_sequence_profile(args.stage_sequence))
-    if args.work_dir is not None:
-        profile["work_dir"] = args.work_dir
-    if args.ckpt_root is not None:
-        profile["ckpt_root"] = args.ckpt_root
-
+    stages = resolve_stage_list(args.run_stagewise_all, args.stage, args.stages)
+    work_dir = Path(args.work_dir)
+    ckpt_root = Path(args.ckpt_root)
     gpus = args.gpus or ["0"]
+
+    exit_code = 0
     for hi, horizon in enumerate(args.horizons):
         for seed in args.seeds:
             gpu = gpus[hi % len(gpus)]
@@ -403,21 +312,29 @@ def main() -> None:
             for stage in stages:
                 load_ckpt = prev_explicit_load if stage == stages[0] else None
                 save_ckpt = args.save_checkpoint if len(stages) == 1 else None
-                run_stage(
+                rc = run_stage(
                     horizon=horizon,
                     stage=stage,
                     seed=seed,
                     gpu=gpu,
-                    profile=profile,
                     num_epochs=args.num_epochs,
                     freeze_previous=args.freeze_previous,
                     detach_previous=args.detach_previous,
-                    stage_sequence=args.stage_sequence,
                     load_checkpoint=load_ckpt,
                     save_checkpoint=save_ckpt,
+                    work_dir=work_dir,
+                    ckpt_root=ckpt_root,
                     dry_run=args.dry_run,
+                    skip_existing=args.skip_existing,
+                    show_errors=args.show_errors,
                 )
+                if rc != 0:
+                    exit_code = rc
+                    if args.show_errors:
+                        raise SystemExit(exit_code)
                 prev_explicit_load = None
+
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":
