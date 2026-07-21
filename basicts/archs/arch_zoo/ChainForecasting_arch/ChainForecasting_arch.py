@@ -1,3 +1,5 @@
+import logging
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -514,6 +516,20 @@ class ChainForecasting(nn.Module):
             stage_outputs.append(current)
         return current, stage_outputs
 
+    def _log_g1_detach_previous_once(self, stage: str) -> None:
+        stage = str(stage).upper()
+        logged = getattr(self, "_g1_detach_logged_stages", None)
+        if logged is None:
+            logged = set()
+            self._g1_detach_logged_stages = logged
+        if stage in logged:
+            return
+        logging.getLogger(__name__).info(
+            "detach_previous=True: detached previous stage outputs for stage %s",
+            stage,
+        )
+        logged.add(stage)
+
     def _temporal_step_trainable(self, step_idx: int, stage: str) -> bool:
         stage = str(stage).upper()
         if stage == "FT":
@@ -531,6 +547,7 @@ class ChainForecasting(nn.Module):
         history_data: torch.Tensor,
         stage: str,
         detach_previous: bool = True,
+        g1_stagewise_detach: bool = False,
     ) -> list[torch.Tensor]:
         spatial_codebook = self._spatial_codebook()
         stage = str(stage).upper()
@@ -549,8 +566,15 @@ class ChainForecasting(nn.Module):
                 and prev_forecast is not None
                 and self.use_prev_condition
             ):
-                prev_up = interpolate_forecast(prev_forecast, target_len)
-                if detach_previous and not self._temporal_step_trainable(step_idx, stage):
+                prev_for_cond = prev_forecast
+                if g1_stagewise_detach:
+                    prev_for_cond = prev_for_cond.detach()
+                prev_up = interpolate_forecast(prev_for_cond, target_len)
+                if (
+                    detach_previous
+                    and not g1_stagewise_detach
+                    and not self._temporal_step_trainable(step_idx, stage)
+                ):
                     prev_up = prev_up.detach()
 
             trainable = self._temporal_step_trainable(step_idx, stage) or stage == "FT"
@@ -629,6 +653,7 @@ class ChainForecasting(nn.Module):
         history_data: torch.Tensor,
         stage: str,
         detach_previous: bool = True,
+        g1_stagewise_detach: bool = False,
     ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor], list[torch.Tensor], dict]:
         """G1_final_adaptive stagewise path: T1/T2/T3 temporal + optional final adaptive spatial (S1)."""
         self._last_graph_diagnostics = None
@@ -640,7 +665,15 @@ class ChainForecasting(nn.Module):
         if self.spatial_module is None:
             raise RuntimeError("G1_stagewise requires spatial_module (final adaptive spatial)")
 
-        temporal_preds = self._forward_temporal_stagewise(history_data, stage, detach_previous)
+        if g1_stagewise_detach and stage in {"T2", "T3", "S1"}:
+            self._log_g1_detach_previous_once(stage)
+
+        temporal_preds = self._forward_temporal_stagewise(
+            history_data,
+            stage,
+            detach_previous,
+            g1_stagewise_detach=g1_stagewise_detach,
+        )
         y_temporal_final = temporal_preds[-1]
         chain_preds = list(temporal_preds)
         spatial_preds = list(temporal_preds)
@@ -654,10 +687,14 @@ class ChainForecasting(nn.Module):
         y_final = y_temporal_final
 
         if stage == "S1":
-            y_T = y_temporal_final.detach() if detach_previous else y_temporal_final
+            y_T = y_temporal_final.detach() if g1_stagewise_detach else y_temporal_final
             y_hat = self._apply_spatial_refine(y_T, history_data)
             y_final = y_hat
             extras["pred_final"] = y_hat
+            extras["Y_T"] = y_T
+            if self.spatial_module is not None and self.spatial_module.g1_stagewise_s1_gate is not None:
+                extras["g1_s1_alpha"] = float(self.spatial_module.hybrid_alpha)
+                extras["g1_s1_gate"] = self.spatial_module.g1_stagewise_s1_gate
             spatial_stage_preds = [y_hat]
 
         return y_final, chain_preds, temporal_preds, spatial_preds, spatial_stage_preds, extras
@@ -821,6 +858,13 @@ class ChainForecasting(nn.Module):
         stagewise_backend: str = "gr7",
         **kwargs,
     ):
+        stagewise_stage = kwargs.get("stagewise_stage", stagewise_stage)
+        detach_previous = kwargs.get("detach_previous", detach_previous)
+        stagewise_backend = kwargs.get("stagewise_backend", stagewise_backend)
+        g1_stagewise_detach = (
+            str(stagewise_backend).lower() == "g1" and bool(detach_previous)
+        )
+
         stagewise_extras: dict = {}
         if stagewise_stage:
             if str(stagewise_backend).lower() == "g1":
@@ -835,6 +879,7 @@ class ChainForecasting(nn.Module):
                     history_data,
                     stage=stagewise_stage,
                     detach_previous=detach_previous,
+                    g1_stagewise_detach=g1_stagewise_detach,
                 )
             else:
                 (

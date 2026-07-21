@@ -13,13 +13,13 @@ from basicts.archs import ChainForecasting
 
 CFG = EasyDict()
 
-CFG.DESCRIPTION = "ChainForecasting on PeMS04 16→32"
+CFG.DESCRIPTION = "ChainForecasting on PeMS04 16→16"
 CFG.RUNNER = ChainForecastingRunner
 CFG.DATASET_CLS = TimeSeriesForecastingDataset
 CFG.DATASET_NAME = "PEMS04"
 CFG.DATASET_TYPE = "Traffic flow"
 CFG.DATASET_INPUT_LEN = 16
-CFG.DATASET_OUTPUT_LEN = 32
+CFG.DATASET_OUTPUT_LEN = 16
 CFG.GPU_NUM = 1
 
 CFG.ENV = EasyDict()
@@ -76,7 +76,7 @@ CFG.MODEL.PARAM = {
     "use_graph_spectral_calibration": False,
     "use_extra_prior_input": False,
     "use_prev_condition": True,
-    "chain_lengths": [8, 16, 32],
+    "chain_lengths": [4, 8, 16],
     "chain_loss_weights": [0.2, 0.3, 1.0],
     "unified_aux_loss_mode": "none",
     "aux_eta_temporal": 0.05,
@@ -143,9 +143,9 @@ CFG.TEST.DATA.PIN_MEMORY = False
 from basicts.runners import G1StagewiseRunner
 CFG.RUNNER = G1StagewiseRunner
 CFG.ENV.SEED = 1
-CFG.TRAIN.NUM_EPOCHS = 80
-CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("checkpoints/g1_stagewise/H32/seed1/T3")
-CFG.DESCRIPTION = "G1_stagewise PeMS04 h32 stage=T3 seed1"
+CFG.TRAIN.NUM_EPOCHS = 40
+CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("checkpoints/g1_stagewise/H16/seed1/S1")
+CFG.DESCRIPTION = "G1_stagewise PeMS04 h16 stage=S1 seed1"
 CFG.MODEL.FORWARD_FEATURES = [0, 1, 2]
 CFG.MODEL.PARAM["input_dim"] = 3
 CFG.MODEL.PARAM["main_input_dim"] = 3
@@ -157,14 +157,14 @@ CFG.MODEL.PARAM["unified_aux_loss_mode"] = 'none'
 CFG.MODEL.PARAM["use_prev_condition"] = True
 CFG.MODEL.PARAM["use_extra_prior_input"] = False
 CFG.MODEL.PARAM["spatial_graph_loss_weights"] = [0.0, 0.0, 0.0]
-CFG.MODEL.PARAM["chain_lengths"] = [8, 16, 32]
+CFG.MODEL.PARAM["chain_lengths"] = [4, 8, 16]
 CFG.MODEL.PARAM["chain_loss_weights"] = [0.0, 0.0, 0.0]
 CFG.TRAIN.OPTIM.PARAM["lr"] = 0.002
-CFG.TEST.EVALUATION_HORIZONS = list(range(1, 33))
-CFG.TRAIN.LR_SCHEDULER.PARAM["milestones"] = [1, 40, 65]
+CFG.TEST.EVALUATION_HORIZONS = list(range(1, 17))
+CFG.TRAIN.LR_SCHEDULER.PARAM["milestones"] = [1, 20, 32]
 CFG.TRAIN.STAGEWISE = EasyDict()
 CFG.TRAIN.STAGEWISE.enabled = True
-CFG.TRAIN.STAGEWISE.stage = 'T3'
+CFG.TRAIN.STAGEWISE.stage = 'S1'
 CFG.TRAIN.STAGEWISE.freeze_previous = True
 CFG.TRAIN.STAGEWISE.detach_previous = True
 CFG.TRAIN.STAGEWISE.stage_sequence = "g1"
@@ -172,5 +172,5 @@ CFG.TRAIN.STAGEWISE.train_shared_temporal = True
 CFG.TRAIN.STAGEWISE.variant_name = 'G1_stagewise'
 CFG.TRAIN.STAGEWISE.base_variant = 'G1_final_adaptive'
 CFG.TRAIN.STAGEWISE.ckpt_root = '/home/dhz/KASA-ST/checkpoints/g1_stagewise'
-CFG.TRAIN.STAGEWISE.load_checkpoint = '/home/dhz/KASA-ST/checkpoints/g1_stagewise/H32/seed1/T2_best.pt'
-CFG.TRAIN.STAGEWISE.save_checkpoint = '/home/dhz/KASA-ST/checkpoints/g1_stagewise/H32/seed1/T3_best.pt'
+CFG.TRAIN.STAGEWISE.load_checkpoint = '/home/dhz/KASA-ST/checkpoints/g1_stagewise/H16/seed1/T3_best.pt'
+CFG.TRAIN.STAGEWISE.save_checkpoint = '/home/dhz/KASA-ST/checkpoints/g1_stagewise/H16/seed1/S1_best.pt'

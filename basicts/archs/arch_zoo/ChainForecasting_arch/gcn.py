@@ -248,10 +248,28 @@ class ABCDSpatialModule(nn.Module):
         self.last_adp_density = None
         self.last_cluster_density = None
         self.last_adj_mean_abs_diff = None
+        self.g1_stagewise_s1_gate = None
         if cluster_adj is not None:
             self.register_buffer("cluster_adj", cluster_adj.float())
         else:
             self.cluster_adj = None
+
+    def enable_g1_stagewise_s1_gate(self) -> None:
+        """Zero-init gate so G1 S1 starts as pred_final ~= pred_T_full."""
+        device = None
+        if self.adaptive_src is not None:
+            device = self.adaptive_src.device
+        elif self.g1_stagewise_s1_gate is not None:
+            device = self.g1_stagewise_s1_gate.device
+        if self.g1_stagewise_s1_gate is None:
+            self.g1_stagewise_s1_gate = nn.Parameter(
+                torch.zeros(1, device=device) if device is not None else torch.zeros(1)
+            )
+        else:
+            with torch.no_grad():
+                self.g1_stagewise_s1_gate.zero_()
+                if device is not None:
+                    self.g1_stagewise_s1_gate.data = self.g1_stagewise_s1_gate.data.to(device)
 
     def _build_dynamic_adj(self, history_flow):
         node_signal = history_flow.permute(0, 2, 1)  # [B, N, L]
@@ -460,6 +478,9 @@ class ABCDSpatialModule(nn.Module):
             else:
                 adj = self._build_mode_adj(history_flow, self.post_spatial_mode)
             refine = apply_adj(x, adj).unsqueeze(-1)
+            if self.g1_stagewise_s1_gate is not None:
+                spatial_residual = refine - output
+                return output + self.hybrid_alpha * self.g1_stagewise_s1_gate * spatial_residual
             return output + self.hybrid_alpha * refine
 
         if self.use_hybrid_graph:

@@ -34,6 +34,13 @@ STAGE_EPOCHS: dict[str, int] = {
     "S1": 40,
 }
 
+STAGE_LR: dict[str, float] = {
+    "T1": 0.002,
+    "T2": 0.002,
+    "T3": 0.002,
+    "S1": 0.0005,
+}
+
 STAGE_MILESTONES: dict[str, list[int]] = {
     "T1": [1, 15, 25],
     "T2": [1, 20, 32],
@@ -92,6 +99,10 @@ def _py_literal(v: Any) -> str:
     if isinstance(v, list):
         return repr(v)
     return str(v)
+
+
+def stage_lr(stage: str) -> float:
+    return float(STAGE_LR[str(stage).upper()])
 
 
 def stage_num_epochs(stage: str, override: int | None) -> int:
@@ -169,7 +180,8 @@ def generate_stage_config(
         lines.append(f'CFG.MODEL.PARAM["{key}"] = {_py_literal(val)}')
     lines.append(f'CFG.MODEL.PARAM["chain_lengths"] = {_py_literal(hspec["chain_lengths"])}')
     lines.append('CFG.MODEL.PARAM["chain_loss_weights"] = [0.0, 0.0, 0.0]')
-    lines.append('CFG.TRAIN.OPTIM.PARAM["lr"] = 0.002')
+    stage_learning_rate = stage_lr(stage)
+    lines.append(f'CFG.TRAIN.OPTIM.PARAM["lr"] = {stage_learning_rate}')
     lines.append(f"CFG.TEST.EVALUATION_HORIZONS = list(range(1, {horizon + 1}))")
     lines.extend(
         [
@@ -249,11 +261,12 @@ def run_stage(
     env["CUDA_VISIBLE_DEVICES"] = str(gpu)
     epochs = stage_num_epochs(stage, num_epochs)
     milestones = stage_milestones(stage)
+    learning_rate = stage_lr(stage)
     load_path = load_checkpoint or resolve_load_checkpoint(stage, str(ckpt_root), horizon, seed)
     save_path = save_checkpoint or default_stage_ckpt_path(str(ckpt_root), horizon, seed, stage)
     print(f"\n=== G1_stagewise h{horizon} stage={stage} seed={seed} GPU={gpu} ===")
     print("base_variant=G1_final_adaptive stage_sequence=T1->T2->T3->S1")
-    print(f"epochs={epochs} lr=0.002 milestones={milestones}")
+    print(f"epochs={epochs} lr={learning_rate} milestones={milestones}")
     print(f"evaluation_horizons=1..{horizon}")
     print(f"config: {cfg_path}")
     print(f"load: {load_path}")

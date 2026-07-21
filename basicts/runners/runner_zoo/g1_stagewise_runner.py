@@ -33,6 +33,11 @@ class G1StagewiseRunner(ChainForecastingRunner):
                 f"G1_stagewise requires spatial_placement='final', got {placement!r}"
             )
 
+    def init_training(self, cfg: dict):
+        if self.stagewise_enabled and self.stagewise_stage == "S1":
+            self._enable_g1_s1_spatial_gate()
+        super().init_training(cfg)
+
     def forward(
         self,
         data: tuple,
@@ -79,7 +84,9 @@ class G1StagewiseRunner(ChainForecastingRunner):
             elif self.stagewise_stage == "T3":
                 prediction_data = out["pred_T_full"]
             elif self.stagewise_stage == "S1":
-                prediction_data = out.get("pred_final") or out["pred"]
+                prediction_data = out.get("pred_final")
+                if prediction_data is None:
+                    prediction_data = out["pred"]
 
         prediction = self.select_target_features(prediction_data)
         real_value = self.select_target_features(real_for_metric)
@@ -91,6 +98,82 @@ class G1StagewiseRunner(ChainForecastingRunner):
                 "error shape of the output, edit the forward function to reshape it to [B, L, N, C]"
             )
         return prediction, real_value
+
+    def _enable_g1_s1_spatial_gate(self) -> None:
+        model = self.model.module if hasattr(self.model, "module") else self.model
+        spatial = getattr(model, "spatial_module", None)
+        if spatial is None:
+            raise RuntimeError("G1_stagewise S1 requires model.spatial_module")
+        spatial.enable_g1_stagewise_s1_gate()
+        self.logger.info(
+            "[G1_stagewise S1] enabled zero-init residual gate on spatial_module "
+            "(pred_final = pred_T_full + alpha * gate * spatial_residual)"
+        )
+
+    def _rebuild_optimizer(self, cfg: dict) -> None:
+        from easytorch.core.optimizer_builder import build_lr_scheduler, build_optim
+
+        train_cfg = cfg.get("TRAIN", {}) if hasattr(cfg, "get") else getattr(cfg, "TRAIN", {})
+        self.optim = build_optim(train_cfg["OPTIM"], self.model)
+        lr_cfg = train_cfg.get("LR_SCHEDULER")
+        if lr_cfg is not None:
+            self.scheduler = build_lr_scheduler(lr_cfg, self.optim)
+        self.logger.info("[G1_stagewise S1] rebuilt optimizer/lr_scheduler for spatial-only params")
+
+    def _masked_mean_abs(self, values: torch.Tensor, mask_reference: torch.Tensor) -> float:
+        if torch.isnan(torch.tensor(self.null_val)):
+            mask = ~torch.isnan(mask_reference)
+        else:
+            eps = 5e-5
+            mask = ~torch.isclose(
+                mask_reference,
+                torch.tensor(self.null_val, device=mask_reference.device),
+                atol=eps,
+                rtol=0.0,
+            )
+        err = values.abs() * mask.float()
+        denom = mask.float().sum().clamp_min(1.0)
+        return float(err.sum().item() / denom.item())
+
+    @torch.no_grad()
+    def _log_g1_s1_initial_mae_diagnostic(self) -> None:
+        if not self.stagewise_enabled or self.stagewise_stage != "S1":
+            return
+        data = next(iter(self.train_data_loader))
+        self.model.eval()
+        forward_return = self.forward(data=data, epoch=None, iter_num=None, train=False)
+        out = self._last_chain_out
+        real_value = self.select_target_features(forward_return[1])
+        pred_t3 = out.get("pred_T_full")
+        pred_s1 = out.get("pred_final")
+        if pred_s1 is None:
+            pred_s1 = out.get("pred")
+        if pred_t3 is None or pred_s1 is None:
+            self.logger.warning("[G1_stagewise S1 init] missing pred_T_full or pred_final for diagnostic")
+            self.model.train()
+            return
+        mae_t3 = float(self._raw_loss(pred_t3, real_value).detach().item())
+        mae_s1 = float(self._raw_loss(pred_s1, real_value).detach().item())
+        pred_s1_r, real_r = self._rescale_pair(pred_s1, real_value)
+        pred_t3_r, _ = self._rescale_pair(pred_t3, real_value)
+        mae_delta = self._masked_mean_abs(pred_s1_r - pred_t3_r, real_r)
+        model = self.model.module if hasattr(self.model, "module") else self.model
+        spatial = getattr(model, "spatial_module", None)
+        gate_val = None
+        alpha_val = None
+        if spatial is not None and spatial.g1_stagewise_s1_gate is not None:
+            gate_val = float(spatial.g1_stagewise_s1_gate.detach().item())
+            alpha_val = float(spatial.hybrid_alpha)
+        self.logger.info(
+            "[G1_stagewise S1 init] mae_T3=%.4f mae_S1=%.4f mae_delta=%.4f "
+            "residual_add=True alpha=%s gate=%s",
+            mae_t3,
+            mae_s1,
+            mae_delta,
+            f"{alpha_val:.4f}" if alpha_val is not None else "n/a",
+            f"{gate_val:.4f}" if gate_val is not None else "n/a",
+        )
+        self.model.train()
 
     def _setup_stagewise_training(self, cfg: dict) -> None:
         from pathlib import Path
@@ -119,6 +202,10 @@ class G1StagewiseRunner(ChainForecastingRunner):
             freeze_previous=self.stagewise_freeze_previous,
             train_shared_temporal=self.stagewise_train_shared_temporal,
         )
+
+        if stage == "S1":
+            self._rebuild_optimizer(cfg)
+            self._log_g1_s1_initial_mae_diagnostic()
 
         train_cfg = cfg.get("TRAIN", {}) if hasattr(cfg, "get") else getattr(cfg, "TRAIN", {})
         optim_param = train_cfg.get("OPTIM", {}).get("PARAM", {}) if hasattr(train_cfg, "get") else {}
@@ -203,6 +290,30 @@ class G1StagewiseRunner(ChainForecastingRunner):
             self.update_epoch_meter("train_" + metric_name, metric_item.item())
 
         return loss
+
+    def backward(self, loss: torch.Tensor):
+        super().backward(loss)
+        if (
+            self.stagewise_enabled
+            and self.stagewise_stage == "S1"
+            and not getattr(self, "_s1_grad_norm_logged", False)
+        ):
+            model = self.model.module if hasattr(self.model, "module") else self.model
+            spatial = getattr(model, "spatial_module", None)
+            if spatial is not None:
+                sq_sum = 0.0
+                tensor_count = 0
+                for param in spatial.parameters():
+                    if param.requires_grad and param.grad is not None:
+                        sq_sum += float(param.grad.data.norm(2).item() ** 2)
+                        tensor_count += 1
+                grad_norm = sq_sum ** 0.5
+                self.logger.info(
+                    "[G1_stagewise S1] spatial_grad_norm=%.6f trainable_tensors_with_grad=%s",
+                    grad_norm,
+                    tensor_count,
+                )
+                self._s1_grad_norm_logged = True
 
     def val_iters(self, iter_index: int, data: Union[torch.Tensor, Tuple]):
         forward_return = self.forward(data=data, epoch=None, iter_num=None, train=False)

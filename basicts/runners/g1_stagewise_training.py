@@ -149,7 +149,9 @@ def compute_stagewise_loss(
         return loss, parts
 
     if stage == "S1":
-        pred = out.get("pred_final") or out.get("pred")
+        pred = out.get("pred_final")
+        if pred is None:
+            pred = out.get("pred")
         if pred is None:
             raise RuntimeError("G1_stagewise S1 forward missing pred_final / pred")
         loss = raw_loss_fn(pred, real_value)

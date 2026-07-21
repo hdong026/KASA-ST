@@ -149,6 +149,7 @@ CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("checkpoints/pems04_unified_aux/h32/G1_fi
 CFG.MODEL.FORWARD_FEATURES = [0, 1, 2, 3]
 CFG.MODEL.TARGET_FEATURES = [0]
 CFG.DESCRIPTION = "PeMS04 unified aux h32: G1_final_adaptive seed1"
+CFG.MODEL.PARAM["variant_name"] = 'G1_final_adaptive'
 CFG.MODEL.PARAM["chain_loss_weights"] = [0.2, 0.3, 1.0]
 CFG.MODEL.PARAM["spatial_graph_loss_weights"] = [0.0, 0.0, 0.0]
 CFG.MODEL.PARAM["use_prev_condition"] = True
