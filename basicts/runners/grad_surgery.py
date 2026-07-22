@@ -71,82 +71,113 @@ def combine_primary_aux_grads(
     return g_final + g_aux
 
 
+def _normalize_grads(
+    raw: tuple[torch.Tensor | None, ...],
+    params: list[nn.Parameter],
+) -> list[torch.Tensor | None]:
+    out: list[torch.Tensor | None] = []
+    for param, grad in zip(params, raw):
+        if grad is None:
+            out.append(torch.zeros_like(param) if param.requires_grad else None)
+        else:
+            out.append(grad)
+    return out
+
+
+def _cosine_stat_key(aux_name: str) -> str:
+    if aux_name == "L_T1":
+        return "cos_g_T1_g_final"
+    if aux_name == "L_T2":
+        return "cos_g_T2_g_final"
+    if aux_name == "L_G14":
+        return "cos_G14_final"
+    if aux_name == "L_G12":
+        return "cos_G12_final"
+    return f"cos_{aux_name}_g_final"
+
+
 def compute_grad_surgery(
     losses: dict[str, torch.Tensor],
     params: list[nn.Parameter],
     aux_grad_max_ratio: float = 0.2,
+    aux_loss_names: list[str] | None = None,
     eps: float = 1e-8,
 ) -> tuple[list[torch.Tensor], dict[str, Any]]:
     """Compute surgically combined gradients for L_final + projected aux grads."""
+    if aux_loss_names is None:
+        aux_loss_names = ["L_T1", "L_T2"]
+
     l_final = losses["L_final"]
-    l_t1 = losses["L_T1"]
-    l_t2 = losses["L_T2"]
-
-    g_final_list = torch.autograd.grad(
-        l_final,
+    g_final_list = _normalize_grads(
+        torch.autograd.grad(
+            l_final,
+            params,
+            retain_graph=True,
+            allow_unused=True,
+            create_graph=False,
+        ),
         params,
-        retain_graph=True,
-        allow_unused=True,
-        create_graph=False,
     )
-    g_t1_list = torch.autograd.grad(
-        l_t1,
-        params,
-        retain_graph=True,
-        allow_unused=True,
-        create_graph=False,
-    )
-    g_t2_list = torch.autograd.grad(
-        l_t2,
-        params,
-        retain_graph=False,
-        allow_unused=True,
-        create_graph=False,
-    )
-
-    def _normalize(raw: tuple[torch.Tensor | None, ...]) -> list[torch.Tensor | None]:
-        out: list[torch.Tensor | None] = []
-        for param, grad in zip(params, raw):
-            if grad is None:
-                out.append(torch.zeros_like(param) if param.requires_grad else None)
-            else:
-                out.append(grad)
-        return out
-
-    g_final_list = _normalize(g_final_list)
-    g_t1_list = _normalize(g_t1_list)
-    g_t2_list = _normalize(g_t2_list)
-
     g_final_flat = flatten_grads(g_final_list)
-    g_t1_flat = flatten_grads(g_t1_list)
-    g_t2_flat = flatten_grads(g_t2_list)
 
-    cos_t1 = cosine_similarity_flat(g_t1_flat, g_final_flat, eps=eps)
-    cos_t2 = cosine_similarity_flat(g_t2_flat, g_final_flat, eps=eps)
+    aux_proj_list: list[torch.Tensor] = []
+    projected_flags: list[bool] = []
+    stats: dict[str, Any] = {
+        "L_final": float(l_final.detach().item()),
+        "final_grad_norm": float(g_final_flat.norm().detach().item()),
+    }
 
-    g_t1_proj, t1_projected = project_aux_grad_flat(g_t1_flat.clone(), g_final_flat, eps=eps)
-    g_t2_proj, t2_projected = project_aux_grad_flat(g_t2_flat.clone(), g_final_flat, eps=eps)
+    for idx, aux_name in enumerate(aux_loss_names):
+        l_aux = losses[aux_name]
+        stats[aux_name] = float(l_aux.detach().item())
+        retain = idx < len(aux_loss_names) - 1
+        g_aux_list = _normalize_grads(
+            torch.autograd.grad(
+                l_aux,
+                params,
+                retain_graph=retain,
+                allow_unused=True,
+                create_graph=False,
+            ),
+            params,
+        )
+        g_aux_flat = flatten_grads(g_aux_list)
+        cos_key = _cosine_stat_key(aux_name)
+        stats[cos_key] = cosine_similarity_flat(g_aux_flat, g_final_flat, eps=eps)
+        g_aux_proj, was_projected = project_aux_grad_flat(
+            g_aux_flat.clone(),
+            g_final_flat,
+            eps=eps,
+        )
+        projected_flags.append(was_projected)
+        aux_proj_list.append(g_aux_proj)
 
     g_combined_flat = combine_primary_aux_grads(
         g_final_flat,
-        [g_t1_proj, g_t2_proj],
+        aux_proj_list,
         aux_grad_max_ratio=aux_grad_max_ratio,
         eps=eps,
     )
 
-    aux_mean = torch.stack([g_t1_proj, g_t2_proj], dim=0).mean(dim=0)
-    stats = {
-        "L_final": float(l_final.detach().item()),
-        "L_T1": float(l_t1.detach().item()),
-        "L_T2": float(l_t2.detach().item()),
-        "cos_g_T1_g_final": cos_t1,
-        "cos_g_T2_g_final": cos_t2,
-        "T1_projected": t1_projected,
-        "T2_projected": t2_projected,
-        "final_grad_norm": float(g_final_flat.norm().detach().item()),
-        "aux_grad_norm": float(aux_mean.norm().detach().item()),
-        "combined_grad_norm": float(g_combined_flat.norm().detach().item()),
-    }
+    aux_mean = (
+        torch.stack(aux_proj_list, dim=0).mean(dim=0)
+        if aux_proj_list
+        else torch.zeros_like(g_final_flat)
+    )
+    stats["aux_grad_norm"] = float(aux_mean.norm().detach().item())
+    stats["combined_grad_norm"] = float(g_combined_flat.norm().detach().item())
+    stats["projected_rate"] = (
+        float(sum(1 for flag in projected_flags if flag) / len(projected_flags))
+        if projected_flags
+        else 0.0
+    )
+
+    if "L_T1" in aux_loss_names:
+        stats["cos_g_T1_g_final"] = stats.get("cos_g_T1_g_final", float("nan"))
+        stats["T1_projected"] = projected_flags[aux_loss_names.index("L_T1")]
+    if "L_T2" in aux_loss_names:
+        stats["cos_g_T2_g_final"] = stats.get("cos_g_T2_g_final", float("nan"))
+        stats["T2_projected"] = projected_flags[aux_loss_names.index("L_T2")]
 
     combined_list = unflatten_grads(g_combined_flat, g_final_list)
     return combined_list, stats

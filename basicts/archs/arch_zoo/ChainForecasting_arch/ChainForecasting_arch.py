@@ -926,6 +926,7 @@ class ChainForecasting(nn.Module):
                 result["graph_resolution_diagnostics"] = self._last_graph_diagnostics
                 diag = self._last_graph_diagnostics
                 result["graph_node_stage_preds"] = diag.get("node_stage_preds")
+                result["graph_stage_preds"] = diag.get("node_stage_preds")
                 result["graph_cluster_residuals"] = diag.get("cluster_residuals")
                 result["graph_lifted_residuals"] = diag.get("lifted_residuals")
                 result["graph_projection_matrices"] = diag.get("graph_projection_matrices")
