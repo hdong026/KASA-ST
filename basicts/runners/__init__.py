@@ -21,6 +21,7 @@ from .runner_zoo.chain_forecasting_runner import ChainForecastingRunner
 from .runner_zoo.g1_stagewise_runner import G1StagewiseRunner
 from .runner_zoo.g1_final_primary_grad_surgery_runner import G1FinalPrimaryGradSurgeryRunner
 from .runner_zoo.gr_capdist_final_primary_runner import GRCapDistFinalPrimaryRunner
+from .runner_zoo.g1_s12_capdist_final_primary_runner import G1S12CapDistFinalPrimaryRunner
 from .runner_zoo.forecast_state_flow_runner import ForecastStateFlowRunner
 from .runner_zoo.st_forecast_state_flow_runner import STForecastStateFlowRunner
 
@@ -33,4 +34,5 @@ __all__ = ["BaseTimeSeriesForecastingRunner",
            "STDNRunner", "HimNetRunner",
            "STAEformerRunner", "STWaveRunner", "ChainForecastingRunner", "G1StagewiseRunner",
            "G1FinalPrimaryGradSurgeryRunner", "GRCapDistFinalPrimaryRunner",
+           "G1S12CapDistFinalPrimaryRunner",
            "ForecastStateFlowRunner", "STForecastStateFlowRunner"]
