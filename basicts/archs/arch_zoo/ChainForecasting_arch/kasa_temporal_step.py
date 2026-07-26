@@ -189,6 +189,9 @@ class KASATemporalStep(nn.Module):
         prev_forecast: Optional[torch.Tensor] = None,
         prev_latent: Optional[torch.Tensor] = None,
         spatial_codebook=None,
+        spectral_router=None,
+        stage_ratio: Optional[float] = None,
+        branch_coefficients: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         step_input, use_cond = self._build_step_input(history_data, prev_forecast, prev_latent)
 
@@ -229,4 +232,34 @@ class KASATemporalStep(nn.Module):
 
         if not branch_outputs:
             raise ValueError("At least one temporal branch must be enabled.")
-        return sum(branch_outputs)
+
+        # Baseline fusion (default path): Y = Y_patch + Y_downsample + Y_linear
+        if branch_coefficients is None and spectral_router is None:
+            return sum(branch_outputs)
+
+        if len(branch_outputs) != 3:
+            raise ValueError(
+                "Routed fusion requires patch, downsample, and linear branches."
+            )
+        y_patch, y_down, y_linear = branch_outputs
+
+        # Light sample-level coefficients from parent: [B, 3] -> [B, 1, 1, 1]
+        if branch_coefficients is not None:
+            if branch_coefficients.ndim != 2 or branch_coefficients.shape[-1] != 3:
+                raise ValueError(
+                    f"branch_coefficients must be [B, 3], got {tuple(branch_coefficients.shape)}"
+                )
+            c_patch = branch_coefficients[:, 0].view(-1, 1, 1, 1)
+            c_down = branch_coefficients[:, 1].view(-1, 1, 1, 1)
+            c_linear = branch_coefficients[:, 2].view(-1, 1, 1, 1)
+            return c_patch * y_patch + c_down * y_down + c_linear * y_linear
+
+        # Legacy per-node spectral router path (unchanged)
+        if stage_ratio is None:
+            raise ValueError("stage_ratio is required when spectral_router is enabled.")
+        pi = spectral_router(history_data[..., 0], float(stage_ratio))
+        coef = 1.0 + pi - (1.0 / 3.0)
+        c_patch = coef[..., 0].unsqueeze(1).unsqueeze(-1)
+        c_down = coef[..., 1].unsqueeze(1).unsqueeze(-1)
+        c_linear = coef[..., 2].unsqueeze(1).unsqueeze(-1)
+        return c_patch * y_patch + c_down * y_down + c_linear * y_linear

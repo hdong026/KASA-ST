@@ -116,6 +116,72 @@ VARIANT_SPECS: dict[str, dict] = {
         "post_spatial_mode": "adaptive_only",
         "use_adaptive_adj": True,
     },
+    # Experiment A: Spectral Stage Router (same chain/spatial; only temporal branch fusion)
+    "chain_interleaved_progressive_spatial_router": {
+        "is_chain": True,
+        "model_name": "ChainForecasting_SpectralRouter",
+        "chain_lengths": None,
+        "chain_loss_weights": CHAIN_LOSS_WEIGHTS,
+        "use_prev_condition": True,
+        "spatial_placement": "interleaved_progressive",
+        "progressive_spatial_ratios": [0.25, 0.5, 1.0],
+        "progressive_spatial_topks": [8, 16, 32],
+        "progressive_spatial_alphas": [0.03, 0.06, 0.10],
+        "post_spatial_mode": "adaptive_only",
+        "use_adaptive_adj": True,
+        "use_spectral_stage_router": True,
+    },
+    # Experiment B: Forecast-State Token MAE (same model; only chain loss aggregation)
+    "chain_interleaved_progressive_spatial_token_loss": {
+        "is_chain": True,
+        "model_name": "ChainForecasting_TokenMAE",
+        "chain_lengths": None,
+        "chain_loss_weights": None,
+        "chain_loss_mode": "token_mae",
+        "use_prev_condition": True,
+        "spatial_placement": "interleaved_progressive",
+        "progressive_spatial_ratios": [0.25, 0.5, 1.0],
+        "progressive_spatial_topks": [8, 16, 32],
+        "progressive_spatial_alphas": [0.03, 0.06, 0.10],
+        "post_spatial_mode": "adaptive_only",
+        "use_adaptive_adj": True,
+        "use_spectral_stage_router": False,
+    },
+    # Light sample-level spectral router (bounded coefs; original weighted chain loss)
+    "chain_interleaved_progressive_spatial_light_router": {
+        "is_chain": True,
+        "model_name": "ChainForecasting_LightSpectralRouter",
+        "chain_lengths": None,
+        "chain_loss_weights": CHAIN_LOSS_WEIGHTS,
+        "use_prev_condition": True,
+        "spatial_placement": "interleaved_progressive",
+        "progressive_spatial_ratios": [0.25, 0.5, 1.0],
+        "progressive_spatial_topks": [8, 16, 32],
+        "progressive_spatial_alphas": [0.03, 0.06, 0.10],
+        "post_spatial_mode": "adaptive_only",
+        "use_adaptive_adj": True,
+        "use_light_spectral_router": True,
+        "router_hidden_dim": 8,
+        "router_max_deviation": 0.05,
+        "router_shared_across_stages": True,
+    },
+    # Forecast-State Dynamics Adapter after Spatial6/Spatial12 (shared, zero-init)
+    "chain_interleaved_progressive_spatial_state_adapter": {
+        "is_chain": True,
+        "model_name": "ChainForecasting_StateAdapter",
+        "chain_lengths": None,
+        "chain_loss_weights": CHAIN_LOSS_WEIGHTS,
+        "use_prev_condition": True,
+        "spatial_placement": "interleaved_progressive",
+        "progressive_spatial_ratios": [0.25, 0.5, 1.0],
+        "progressive_spatial_topks": [8, 16, 32],
+        "progressive_spatial_alphas": [0.03, 0.06, 0.10],
+        "post_spatial_mode": "adaptive_only",
+        "use_adaptive_adj": True,
+        "use_forecast_state_adapter": True,
+        "forecast_state_adapter_hidden_dim": 16,
+        "forecast_state_adapter_epsilon": 0.05,
+    },
 }
 
 METRIC_PATTERNS = {
@@ -190,6 +256,8 @@ def strip_hardcoded_cuda_devices(content: str) -> str:
 
 
 def _py_literal(v) -> str:
+    if v is None:
+        return "None"
     if isinstance(v, bool):
         return "True" if v else "False"
     if isinstance(v, str):
@@ -197,6 +265,9 @@ def _py_literal(v) -> str:
     if isinstance(v, list):
         return repr(v)
     return str(v)
+
+
+_META_SPEC_KEYS = {"is_chain", "model_name"}
 
 
 def generate_temp_config(horizon: int, variant: str, seed: int) -> Path:
@@ -221,9 +292,13 @@ def generate_temp_config(horizon: int, variant: str, seed: int) -> Path:
         f'CFG.MODEL.PARAM["output_len"] = {horizon}',
         f"CFG.TEST.EVALUATION_HORIZONS = list(range(1, {horizon + 1}))",
     ]
+    model_name = spec.get("model_name")
+    if model_name:
+        lines.append(f"CFG.MODEL.NAME = {_py_literal(model_name)}")
     for key, val in spec.items():
-        if key in ("is_chain",) or val is None:
+        if key in _META_SPEC_KEYS:
             continue
+        # Keep explicit None for keys like chain_loss_weights under token_mae.
         lines.append(f'CFG.MODEL.PARAM["{key}"] = {_py_literal(val)}')
     out = temp_cfg_path(horizon, variant, seed)
     out.write_text(content + "\n".join(lines) + "\n", encoding="utf-8")

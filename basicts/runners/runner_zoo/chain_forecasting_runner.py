@@ -6,6 +6,7 @@ import torch
 from easytorch.utils.dist import master_only
 
 from basicts.archs.arch_zoo.ChainForecasting_arch import ChainForecasting
+from basicts.losses.forecast_state_token_mae import forecast_state_token_mae
 from basicts.runners.base_tsf_runner import SCALER_REGISTRY
 from basicts.runners.stagewise_training import (
     STAGE_LOSS_NAMES,
@@ -25,14 +26,28 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         "unified_residual_detach",
         "unified_mono",
     }
+    CHAIN_LOSS_MODES = {"weighted", "token_mae"}
 
     def __init__(self, cfg: dict):
         super().__init__(cfg)
         param = cfg["MODEL"]["PARAM"]
         self.chain_lengths = list(param.get("chain_lengths", [3, 6, 12]))
-        self.chain_loss_weights = list(param.get("chain_loss_weights", [0.2, 0.3, 1.0]))
-        if len(self.chain_lengths) != len(self.chain_loss_weights):
-            raise ValueError("chain_lengths and chain_loss_weights must have the same length.")
+        self.chain_loss_mode = str(param.get("chain_loss_mode", "weighted")).lower()
+        if self.chain_loss_mode not in self.CHAIN_LOSS_MODES:
+            raise ValueError(
+                f"Unsupported chain_loss_mode: {self.chain_loss_mode}. "
+                f"Expected one of {sorted(self.CHAIN_LOSS_MODES)}."
+            )
+        raw_weights = param.get("chain_loss_weights", [0.2, 0.3, 1.0])
+        if self.chain_loss_mode == "token_mae":
+            # Artificial stage weights are unused; allow None / omit.
+            self.chain_loss_weights = list(raw_weights) if raw_weights is not None else []
+        else:
+            if raw_weights is None:
+                raise ValueError("chain_loss_weights is required when chain_loss_mode='weighted'.")
+            self.chain_loss_weights = list(raw_weights)
+            if len(self.chain_lengths) != len(self.chain_loss_weights):
+                raise ValueError("chain_lengths and chain_loss_weights must have the same length.")
         self.spatial_stage_loss_weights = list(
             param.get("spatial_stage_loss_weights", [0.0, 0.0, 1.0])
         )
@@ -352,6 +367,23 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         }
         return loss, parts
 
+    def _token_mae_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
+        """Token-normalized MAE on post-spatial forecast states (no stage reweighting)."""
+        preds = list(out["chain_preds"])
+        targets = [ChainForecasting.pool_target(real_value, k) for k in self.chain_lengths]
+        if len(preds) != len(targets):
+            raise ValueError(
+                f"chain_preds ({len(preds)}) and chain_lengths ({len(targets)}) mismatch."
+            )
+        # Do not add out["pred"] again: for interleaved spatial, chain_preds[-1] is the
+        # final forecast state already (avoids double-counting T12).
+        return forecast_state_token_mae(
+            preds,
+            targets,
+            null_val=self.null_val,
+            rescale_pair=self._rescale_pair,
+        )
+
     def _legacy_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
         preds = out["chain_preds"]
         targets = [ChainForecasting.pool_target(real_value, k) for k in self.chain_lengths]
@@ -617,6 +649,8 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             loss, parts = self._compute_unified_loss(out, real_value)
             self._last_unified_loss_parts = parts
             self._log_unified_loss_parts(epoch, iter_index, parts)
+        elif self.chain_loss_mode == "token_mae":
+            loss = self._token_mae_loss(out, real_value)
         else:
             loss = self._legacy_loss(out, real_value)
 

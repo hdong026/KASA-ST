@@ -11,6 +11,15 @@ from basicts.archs.arch_zoo.ChainForecasting_arch.kasa_temporal_step import (
     interpolate_forecast,
     interpolate_latent,
 )
+from basicts.archs.arch_zoo.ChainForecasting_arch.forecast_state_adapter import (
+    ForecastStateAdapter,
+)
+from basicts.archs.arch_zoo.ChainForecasting_arch.light_spectral_stage_router import (
+    LightSpectralStageRouter,
+)
+from basicts.archs.arch_zoo.ChainForecasting_arch.spectral_branch_router import (
+    SpectralBranchRouter,
+)
 
 
 class ChainForecasting(nn.Module):
@@ -45,8 +54,27 @@ class ChainForecasting(nn.Module):
         self.patch_feature_dim = model_args.get("patch_feature_dim", None)
 
         self.chain_lengths = list(model_args.get("chain_lengths", [3, 6, 12]))
-        self.chain_loss_weights = list(model_args.get("chain_loss_weights", [0.2, 0.3, 1.0]))
+        raw_chain_loss_weights = model_args.get("chain_loss_weights", [0.2, 0.3, 1.0])
+        self.chain_loss_weights = (
+            list(raw_chain_loss_weights) if raw_chain_loss_weights is not None else []
+        )
         self.use_prev_condition = model_args.get("use_prev_condition", True)
+        self.use_spectral_stage_router = bool(
+            model_args.get("use_spectral_stage_router", False)
+        )
+        self.use_light_spectral_router = bool(
+            model_args.get("use_light_spectral_router", False)
+        )
+        self.router_shared_across_stages = bool(
+            model_args.get("router_shared_across_stages", True)
+        )
+        self.use_forecast_state_adapter = bool(
+            model_args.get("use_forecast_state_adapter", False)
+        )
+        if self.use_spectral_stage_router and self.use_light_spectral_router:
+            raise ValueError(
+                "use_spectral_stage_router and use_light_spectral_router are mutually exclusive."
+            )
         self.architecture_mode = str(model_args.get("architecture_mode", "chain")).lower()
         if self.architecture_mode not in {"chain", "direct_matched"}:
             raise ValueError(
@@ -148,6 +176,51 @@ class ChainForecasting(nn.Module):
         self.hidden_steps = nn.ModuleList()
         self.final_temporal_step = None
         self.latent_encoders = nn.ModuleList()
+        self.spectral_branch_router = None
+        self.light_spectral_router = None
+        self.forecast_state_adapter = None
+        if self.use_spectral_stage_router:
+            if not (
+                self.use_patch_branch
+                and self.use_downsample_branch
+                and self.use_linear_residual_branch
+            ):
+                raise ValueError(
+                    "use_spectral_stage_router requires patch, downsample, and linear branches."
+                )
+            self.spectral_branch_router = SpectralBranchRouter(
+                hidden_dim=int(model_args.get("spectral_router_hidden_dim", 32))
+            )
+        if self.use_light_spectral_router:
+            if not (
+                self.use_patch_branch
+                and self.use_downsample_branch
+                and self.use_linear_residual_branch
+            ):
+                raise ValueError(
+                    "use_light_spectral_router requires patch, downsample, and linear branches."
+                )
+            if not self.router_shared_across_stages:
+                raise ValueError(
+                    "light spectral router must be shared across stages "
+                    "(router_shared_across_stages=True)."
+                )
+            # Prefer explicit router_hidden_dim; keep spectral_router_hidden_dim as alias.
+            hidden = model_args.get(
+                "router_hidden_dim",
+                model_args.get("spectral_router_hidden_dim", 8),
+            )
+            self.light_spectral_router = LightSpectralStageRouter(
+                hidden_dim=int(hidden),
+                max_deviation=float(model_args.get("router_max_deviation", 0.05)),
+            )
+        if self.use_forecast_state_adapter:
+            self.forecast_state_adapter = ForecastStateAdapter(
+                hidden_dim=int(
+                    model_args.get("forecast_state_adapter_hidden_dim", 16)
+                ),
+                epsilon=float(model_args.get("forecast_state_adapter_epsilon", 0.05)),
+            )
 
         if self.architecture_mode == "direct_matched":
             matched_num_layer = int(model_args.get("matched_num_layer", self.num_layer))
@@ -373,6 +446,15 @@ class ChainForecasting(nn.Module):
             "adaptive_ms_fusion": model_args.get("adaptive_ms_fusion", "softmax"),
             "adaptive_ms_share_logits": model_args.get("adaptive_ms_share_logits", True),
             "adaptive_ms_init": model_args.get("adaptive_ms_init", "favor_largest"),
+            "spatial_attn_dim": model_args.get("spatial_attn_dim", 32),
+            "spatial_attn_heads": model_args.get("spatial_attn_heads", 4),
+            "spatial_attn_ffn_dim": model_args.get("spatial_attn_ffn_dim", 128),
+            "spatial_attn_layers": model_args.get("spatial_attn_layers", 1),
+            "spatial_attn_dropout": model_args.get("spatial_attn_dropout", 0.1),
+            "stae_time_len": model_args.get(
+                "stae_time_len",
+                model_args.get("output_len", model_args.get("input_len")),
+            ),
         }
         kwargs.update(overrides)
         return kwargs
@@ -713,6 +795,7 @@ class ChainForecasting(nn.Module):
 
         for step_idx, step in enumerate(self.temporal_steps):
             target_len = self.chain_lengths[step_idx]
+            previous_state = prev_forecast
             prev_up = None
             if (
                 self.propagation_mode == "forecast_state"
@@ -721,17 +804,32 @@ class ChainForecasting(nn.Module):
             ):
                 prev_up = interpolate_forecast(prev_forecast, target_len)
 
+            router_kwargs = {}
+            stage_ratio = float(target_len) / float(self.output_len)
+            if self.light_spectral_router is not None:
+                # Parent computes sample-level coefficients once per stage; shared router.
+                branch_coefficients = self.light_spectral_router(
+                    history_data[..., 0], stage_ratio
+                )
+                router_kwargs = {"branch_coefficients": branch_coefficients}
+            elif self.spectral_branch_router is not None:
+                router_kwargs = {
+                    "spectral_router": self.spectral_branch_router,
+                    "stage_ratio": stage_ratio,
+                }
             if self.propagation_mode == "latent" and prev_latent is not None:
                 t_k = step(
                     history_data,
                     prev_latent=prev_latent,
                     spatial_codebook=spatial_codebook,
+                    **router_kwargs,
                 )
             else:
                 t_k = step(
                     history_data,
                     prev_forecast=prev_up,
                     spatial_codebook=spatial_codebook,
+                    **router_kwargs,
                 )
 
             if self.spatial_placement == "interleaved_progressive":
@@ -740,6 +838,18 @@ class ChainForecasting(nn.Module):
                 z_k = self._apply_spatial_refine(t_k, history_data)
             else:
                 z_k = t_k
+
+            # Shared Forecast-State Adapter on Z3→Z6 and Z6→Z12 only (not on Z3).
+            if (
+                self.forecast_state_adapter is not None
+                and step_idx > 0
+                and previous_state is not None
+            ):
+                z_k = self.forecast_state_adapter(
+                    current_state=z_k,
+                    previous_state=previous_state,
+                    stage_ratio=stage_ratio,
+                )
 
             temporal_preds.append(t_k)
             spatial_preds.append(z_k)
@@ -758,6 +868,7 @@ class ChainForecasting(nn.Module):
                 prev_forecast = t_k
                 prev_latent = None
             else:
+                # Corrected Z6 becomes previous forecast for T12.
                 prev_forecast = z_k
                 prev_latent = None
 

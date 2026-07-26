@@ -45,6 +45,60 @@ def mask_topk(logits, topk):
     return logits.masked_fill(~keep_mask, float("-inf"))
 
 
+def build_adaptive_adj_with_self(
+    src_embedding: torch.Tensor,
+    dst_embedding: torch.Tensor,
+    topk: int,
+    tau: float,
+) -> torch.Tensor:
+    """Build row-stochastic adaptive adjacency that always includes self-loops.
+
+    Each row keeps exactly ``topk`` nonzeros: the self node plus top-(k-1)
+    non-self neighbors (or only self when ``topk == 1``).
+    """
+    src = F.normalize(src_embedding, p=2, dim=-1)
+    dst = F.normalize(dst_embedding, p=2, dim=-1)
+
+    logits = torch.matmul(src, dst.transpose(0, 1))
+    logits = logits / sqrt(src.shape[-1])
+
+    num_nodes = logits.shape[0]
+    if topk < 1 or topk > num_nodes:
+        raise ValueError(f"topk must be in [1, {num_nodes}], got {topk}")
+
+    self_index = torch.arange(num_nodes, device=logits.device)
+
+    if topk == 1:
+        selected_logits = logits[self_index, self_index].unsqueeze(-1)
+        selected_indices = self_index.unsqueeze(-1)
+    else:
+        non_self_logits = logits.clone()
+        non_self_logits[self_index, self_index] = float("-inf")
+        neighbor_logits, neighbor_indices = torch.topk(
+            non_self_logits,
+            k=topk - 1,
+            dim=-1,
+        )
+        self_logits = logits[self_index, self_index].unsqueeze(-1)
+        selected_logits = torch.cat([self_logits, neighbor_logits], dim=-1)
+        selected_indices = torch.cat(
+            [self_index.unsqueeze(-1), neighbor_indices],
+            dim=-1,
+        )
+
+    selected_weights = torch.softmax(
+        selected_logits / max(float(tau), 1e-6),
+        dim=-1,
+    )
+    adjacency = torch.zeros_like(logits)
+    adjacency.scatter_(
+        dim=-1,
+        index=selected_indices,
+        src=selected_weights,
+    )
+    return adjacency
+
+
 def load_adj_from_pickle(adj_mx_path):
     if not adj_mx_path or not os.path.exists(adj_mx_path):
         return None
@@ -75,6 +129,119 @@ class GCNLayer(nn.Module):
         support = self.linear(x)
         output = torch.mm(adj, support)
         return self.activate(output)
+
+
+class STAESpatialAttentionBlock(nn.Module):
+    """STAEformer-style spatial self-attention over the node dimension.
+
+    Operates on [B, T, N, 1] forecasts: project to d_model, add a learnable
+    spatiotemporal adaptive embedding, apply node-wise MHA (+ FFN) with
+    internal residuals, then project back to 1 channel. The block output is
+    the final prediction (no outer residual onto Y_T).
+    """
+
+    def __init__(
+        self,
+        node_size: int,
+        time_len: int,
+        d_model: int = 32,
+        num_heads: int = 4,
+        ffn_dim: int = 128,
+        num_layers: int = 1,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        if d_model % num_heads != 0:
+            raise ValueError(
+                f"spatial_attn_dim={d_model} must be divisible by "
+                f"spatial_attn_heads={num_heads}."
+            )
+        if num_layers < 1:
+            raise ValueError(f"spatial_attn_layers must be >= 1, got {num_layers}.")
+
+        self.node_size = int(node_size)
+        self.time_len = int(time_len)
+        self.d_model = int(d_model)
+        self.num_layers = int(num_layers)
+
+        self.input_proj = nn.Linear(1, self.d_model)
+        self.adaptive_embedding = nn.Parameter(
+            torch.empty(self.time_len, self.node_size, self.d_model)
+        )
+        nn.init.xavier_uniform_(self.adaptive_embedding)
+
+        self.attn_layers = nn.ModuleList()
+        self.norm1_layers = nn.ModuleList()
+        self.ffn_layers = nn.ModuleList()
+        self.norm2_layers = nn.ModuleList()
+        self.dropout = nn.Dropout(dropout)
+
+        for _ in range(self.num_layers):
+            self.attn_layers.append(
+                nn.MultiheadAttention(
+                    embed_dim=self.d_model,
+                    num_heads=num_heads,
+                    dropout=dropout,
+                    batch_first=True,
+                )
+            )
+            self.norm1_layers.append(nn.LayerNorm(self.d_model))
+            self.ffn_layers.append(
+                nn.Sequential(
+                    nn.Linear(self.d_model, ffn_dim),
+                    nn.GELU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(ffn_dim, self.d_model),
+                )
+            )
+            self.norm2_layers.append(nn.LayerNorm(self.d_model))
+
+        self.output_proj = nn.Linear(self.d_model, 1)
+
+    def forward(self, y_temporal_final: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            y_temporal_final: [B, T, N, 1]
+        Returns:
+            prediction: [B, T, N, 1]
+        """
+        if y_temporal_final.ndim != 4 or y_temporal_final.shape[-1] != 1:
+            raise ValueError(
+                "y_temporal_final must have shape [B, T, N, 1], "
+                f"got {tuple(y_temporal_final.shape)}."
+            )
+
+        batch_size, time_len, num_nodes, _ = y_temporal_final.shape
+        if num_nodes != self.node_size:
+            raise ValueError(
+                f"Expected num_nodes={self.node_size}, got {num_nodes}."
+            )
+        if time_len != self.time_len:
+            raise ValueError(
+                f"Expected time_len={self.time_len}, got {time_len}."
+            )
+
+        # [B, T, N, d]
+        hidden = self.input_proj(y_temporal_final)
+        hidden = hidden + self.adaptive_embedding.unsqueeze(0)
+
+        # Node-dimension attention: treat each (B, T) as a batch item over N tokens.
+        hidden = hidden.reshape(batch_size * time_len, num_nodes, self.d_model)
+
+        for attn, norm1, ffn, norm2 in zip(
+            self.attn_layers,
+            self.norm1_layers,
+            self.ffn_layers,
+            self.norm2_layers,
+        ):
+            attn_out, _ = attn(hidden, hidden, hidden, need_weights=False)
+            hidden = norm1(hidden + self.dropout(attn_out))
+            ffn_out = ffn(hidden)
+            hidden = norm2(hidden + self.dropout(ffn_out))
+
+        prediction = self.output_proj(hidden)
+        prediction = prediction.reshape(batch_size, time_len, num_nodes, 1)
+        return prediction
 
 
 class ABCDSpatialModule(nn.Module):
@@ -113,6 +280,12 @@ class ABCDSpatialModule(nn.Module):
         adaptive_ms_init="favor_largest",
         cluster_adj=None,
         cluster_graph_mix_lambda=0.5,
+        spatial_attn_dim=32,
+        spatial_attn_heads=4,
+        spatial_attn_ffn_dim=128,
+        spatial_attn_layers=1,
+        spatial_attn_dropout=0.1,
+        stae_time_len=None,
     ):
         super().__init__()
         self.node_size = node_size
@@ -143,7 +316,28 @@ class ABCDSpatialModule(nn.Module):
             self.use_gcn = False
             self.use_lightweight_spatial = False
 
-        if self.post_spatial_mode not in {"adaptive_multiscale_only", "adaptive_cluster_mix"} and self.spatial_scheme in {"A", "B", "C", "D"}:
+        if self.post_spatial_mode == "adaptive_self_replace":
+            # Independent G1-self-replace path: Y_hat = A_self Y_T.
+            self.use_adaptive_adj = True
+            self.use_dynamic_spatial = False
+            self.use_hybrid_graph = False
+            self.use_gcn = False
+            self.use_lightweight_spatial = False
+
+        if self.post_spatial_mode == "stae_spatial_attention":
+            # STAEformer-style latent spatial attention; no graph averaging.
+            self.use_adaptive_adj = False
+            self.use_dynamic_spatial = False
+            self.use_hybrid_graph = False
+            self.use_gcn = False
+            self.use_lightweight_spatial = False
+
+        if self.post_spatial_mode not in {
+            "adaptive_multiscale_only",
+            "adaptive_cluster_mix",
+            "adaptive_self_replace",
+            "stae_spatial_attention",
+        } and self.spatial_scheme in {"A", "B", "C", "D"}:
             self.use_gcn = self.spatial_scheme in {"A", "C"}
             self.use_dynamic_spatial = self.spatial_scheme in {"B", "C"}
             self.use_adaptive_adj = self.spatial_scheme in {"C"}
@@ -178,7 +372,11 @@ class ABCDSpatialModule(nn.Module):
         # Static adjacency buffer.
         self.register_buffer("adj_mx", None)
         need_static_adj = (
-            self.post_spatial_mode != "adaptive_multiscale_only"
+            self.post_spatial_mode not in {
+                "adaptive_multiscale_only",
+                "adaptive_self_replace",
+                "stae_spatial_attention",
+            }
             and (
                 self.use_gcn
                 or self.use_dynamic_spatial
@@ -188,6 +386,18 @@ class ABCDSpatialModule(nn.Module):
         )
         if need_static_adj:
             self.adj_mx = load_adj_from_pickle(adj_mx_path)
+
+        self.stae_spatial_block = None
+        if self.post_spatial_mode == "stae_spatial_attention":
+            self.stae_spatial_block = STAESpatialAttentionBlock(
+                node_size=self.node_size,
+                time_len=int(stae_time_len or input_len),
+                d_model=int(spatial_attn_dim),
+                num_heads=int(spatial_attn_heads),
+                ffn_dim=int(spatial_attn_ffn_dim),
+                num_layers=int(spatial_attn_layers),
+                dropout=float(spatial_attn_dropout),
+            )
 
         # Scheme A: static GCN on spatial codebook.
         self.gcn1 = None
@@ -292,6 +502,15 @@ class ABCDSpatialModule(nn.Module):
         logits = mask_topk(logits, self.adp_topk)
         adp_adj = torch.softmax(logits / max(self.adp_tau, 1e-6), dim=-1)
         return adp_adj
+
+    def _build_adaptive_adj_with_self(self):
+        """Adaptive adjacency with an explicit self-loop in every row."""
+        return build_adaptive_adj_with_self(
+            src_embedding=self.adaptive_src,
+            dst_embedding=self.adaptive_dst,
+            topk=int(self.adp_topk),
+            tau=float(self.adp_tau),
+        )
 
     @staticmethod
     def _init_adaptive_ms_logits(num_scales: int, init_mode: str = "favor_largest") -> torch.Tensor:
@@ -434,7 +653,23 @@ class ABCDSpatialModule(nn.Module):
         if self.post_spatial_mode == "adaptive_multiscale_only":
             return self._refine_adaptive_multiscale(output, history_flow)
 
+        if self.post_spatial_mode == "stae_spatial_attention":
+            # Strict replace: Y_final = Projection(SpatialTransformer(Embed(Y_T)+E_adp)).
+            # Internal residuals keep self information; do not add Y_T outside.
+            if self.stae_spatial_block is None:
+                raise RuntimeError(
+                    "stae_spatial_block is required for stae_spatial_attention mode."
+                )
+            del history_flow
+            return self.stae_spatial_block(output)
+
         x = output.squeeze(-1)
+
+        if self.post_spatial_mode == "adaptive_self_replace":
+            # Strict replace: Y_hat = A_self Y_T  (no residual, no hybrid_alpha).
+            adp_adj = self._build_adaptive_adj_with_self()
+            self.last_adaptive_adj = adp_adj.detach()
+            return apply_adj(x, adp_adj).unsqueeze(-1)
 
         if self.post_spatial_mode == "adaptive_cluster_mix":
             if self.cluster_adj is None:
@@ -518,6 +753,8 @@ class ABCDSpatialModule(nn.Module):
         """Return adaptive adjacency used in adaptive-only post-spatial refinement."""
         if self.last_adaptive_adj is not None:
             return self.last_adaptive_adj
+        if self.adaptive_src is not None and self.post_spatial_mode == "adaptive_self_replace":
+            return self._build_adaptive_adj_with_self().detach()
         if self.use_adaptive_adj or self.adaptive_src is not None:
             return self._build_adaptive_adj().detach()
         raise RuntimeError("Adaptive adjacency is not available for the current spatial configuration.")
