@@ -132,20 +132,20 @@ CFG.TEST.DATA.NUM_WORKERS = 2
 CFG.TEST.DATA.PIN_MEMORY = False
 
 # ===== fixed_input_horizon_pems04 overrides (auto-generated) =====
-CFG.ENV.SEED = 1
+CFG.ENV.SEED = 3
 if hasattr(CFG, 'SEED'):
-    CFG.SEED = 1
+    CFG.SEED = 3
 if hasattr(CFG, 'TRAIN') and hasattr(CFG.TRAIN, 'SEED'):
-    CFG.TRAIN.SEED = 1
+    CFG.TRAIN.SEED = 3
 CFG.DATASET_INPUT_LEN = 12
 CFG.DATASET_OUTPUT_LEN = 12
-CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("checkpoints/fixed_input_horizon_pems04/h12/chain_interleaved_progressive_spatial_state_adapter_seed1")
+CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("checkpoints/fixed_input_horizon_pems04/h12/chain_interleaved_progressive_spatial_state_adapter_fixed_seed3")
 CFG.MODEL.FORWARD_FEATURES = [0, 1, 2, 3]
 CFG.MODEL.TARGET_FEATURES = [0]
 CFG.MODEL.PARAM["input_len"] = 12
 CFG.MODEL.PARAM["output_len"] = 12
 CFG.TEST.EVALUATION_HORIZONS = list(range(1, 13))
-CFG.MODEL.NAME = 'ChainForecasting_StateAdapter'
+CFG.MODEL.NAME = 'ChainForecasting_StateAdapterFixed'
 CFG.MODEL.PARAM["use_patch_branch"] = True
 CFG.MODEL.PARAM["use_downsample_branch"] = True
 CFG.MODEL.PARAM["use_linear_residual_branch"] = True
@@ -167,6 +167,6 @@ CFG.MODEL.PARAM["progressive_spatial_topks"] = [8, 16, 32]
 CFG.MODEL.PARAM["progressive_spatial_alphas"] = [0.03, 0.06, 0.1]
 CFG.MODEL.PARAM["use_adaptive_adj"] = True
 CFG.MODEL.PARAM["use_forecast_state_adapter"] = True
-CFG.MODEL.PARAM["forecast_state_adapter_mode"] = 'state_replace'
+CFG.MODEL.PARAM["forecast_state_adapter_mode"] = 'condition_only'
 CFG.MODEL.PARAM["forecast_state_adapter_hidden_dim"] = 16
-CFG.MODEL.PARAM["forecast_state_adapter_epsilon"] = 0.05
+CFG.MODEL.PARAM["forecast_state_adapter_epsilon"] = 0.02

@@ -71,6 +71,15 @@ class ChainForecasting(nn.Module):
         self.use_forecast_state_adapter = bool(
             model_args.get("use_forecast_state_adapter", False)
         )
+        self.forecast_state_adapter_mode = str(
+            model_args.get("forecast_state_adapter_mode", "state_replace")
+        ).lower()
+        if self.forecast_state_adapter_mode not in {"state_replace", "condition_only"}:
+            raise ValueError(
+                f"Unsupported forecast_state_adapter_mode: "
+                f"{self.forecast_state_adapter_mode}. "
+                "Expected 'state_replace' or 'condition_only'."
+            )
         if self.use_spectral_stage_router and self.use_light_spectral_router:
             raise ValueError(
                 "use_spectral_stage_router and use_light_spectral_router are mutually exclusive."
@@ -214,13 +223,9 @@ class ChainForecasting(nn.Module):
                 hidden_dim=int(hidden),
                 max_deviation=float(model_args.get("router_max_deviation", 0.05)),
             )
-        if self.use_forecast_state_adapter:
-            self.forecast_state_adapter = ForecastStateAdapter(
-                hidden_dim=int(
-                    model_args.get("forecast_state_adapter_hidden_dim", 16)
-                ),
-                epsilon=float(model_args.get("forecast_state_adapter_epsilon", 0.05)),
-            )
+        # ForecastStateAdapter is created AFTER all baseline modules
+        # (temporal_steps / progressive spatial / ...) so it does not consume RNG
+        # and shift backbone initialization vs the original interleaved baseline.
 
         if self.architecture_mode == "direct_matched":
             matched_num_layer = int(model_args.get("matched_num_layer", self.num_layer))
@@ -416,6 +421,25 @@ class ChainForecasting(nn.Module):
                 unified_aux_loss_mode=model_args.get("unified_aux_loss_mode", "none"),
                 adp_hidden_dim=model_args.get("adp_hidden_dim", 32),
                 adp_tau=model_args.get("adp_tau", 0.5),
+            )
+
+        # Instantiate Forecast-State Adapter only after baseline modules exist.
+        if self.use_forecast_state_adapter:
+            is_condition_only = self.forecast_state_adapter_mode == "condition_only"
+            self.forecast_state_adapter = ForecastStateAdapter(
+                hidden_dim=int(
+                    model_args.get("forecast_state_adapter_hidden_dim", 16)
+                ),
+                epsilon=float(
+                    model_args.get(
+                        "forecast_state_adapter_epsilon",
+                        0.02 if is_condition_only else 0.05,
+                    )
+                ),
+                correction_scale=(
+                    "sample_scale" if is_condition_only else "transition_delta"
+                ),
+                delta_feature="normalized" if is_condition_only else "raw",
             )
 
     @staticmethod
@@ -833,31 +857,42 @@ class ChainForecasting(nn.Module):
                 )
 
             if self.spatial_placement == "interleaved_progressive":
-                z_k = self._apply_progressive_spatial_refine(t_k, history_data, step_idx)
+                z_raw = self._apply_progressive_spatial_refine(t_k, history_data, step_idx)
             elif self.spatial_placement == "each_level":
-                z_k = self._apply_spatial_refine(t_k, history_data)
+                z_raw = self._apply_spatial_refine(t_k, history_data)
             else:
-                z_k = t_k
+                z_raw = t_k
 
-            # Shared Forecast-State Adapter on Z3→Z6 and Z6→Z12 only (not on Z3).
-            if (
-                self.forecast_state_adapter is not None
-                and step_idx > 0
-                and previous_state is not None
-            ):
-                z_k = self.forecast_state_adapter(
-                    current_state=z_k,
-                    previous_state=previous_state,
-                    stage_ratio=stage_ratio,
-                )
+            # Forecast-State Adapter modes:
+            # - state_replace (legacy): correct Z6/Z12; corrected state is supervised
+            #   and passed as next-stage previous_forecast.
+            # - condition_only (fixed): only Z3→Z6 builds Z6_condition for T12;
+            #   L6/L12 supervise raw Z6/Z12; final output is Z12_raw.
+            supervised_state = z_raw
+            next_prev = z_raw
+            if self.forecast_state_adapter is not None and previous_state is not None:
+                if self.forecast_state_adapter_mode == "condition_only":
+                    if step_idx == 1:
+                        next_prev = self.forecast_state_adapter(
+                            current_state=z_raw,
+                            previous_state=previous_state,
+                            stage_ratio=stage_ratio,
+                        )
+                elif step_idx > 0:
+                    supervised_state = self.forecast_state_adapter(
+                        current_state=z_raw,
+                        previous_state=previous_state,
+                        stage_ratio=stage_ratio,
+                    )
+                    next_prev = supervised_state
 
             temporal_preds.append(t_k)
-            spatial_preds.append(z_k)
+            spatial_preds.append(supervised_state)
 
             if self.chain_supervision_source == "temporal_chain":
                 chain_preds.append(t_k)
             else:
-                chain_preds.append(z_k)
+                chain_preds.append(supervised_state)
 
             if self.propagation_mode == "latent":
                 if step_idx < len(self.latent_encoders):
@@ -868,8 +903,7 @@ class ChainForecasting(nn.Module):
                 prev_forecast = t_k
                 prev_latent = None
             else:
-                # Corrected Z6 becomes previous forecast for T12.
-                prev_forecast = z_k
+                prev_forecast = next_prev
                 prev_latent = None
 
         y_temporal_final = temporal_preds[-1]

@@ -26,7 +26,8 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         "unified_residual_detach",
         "unified_mono",
     }
-    CHAIN_LOSS_MODES = {"weighted", "token_mae"}
+    CHAIN_LOSS_MODES = {"weighted", "token_mae", "token_normalized"}
+    TOKEN_LOSS_MODES = {"token_mae", "token_normalized"}
 
     def __init__(self, cfg: dict):
         super().__init__(cfg)
@@ -39,7 +40,7 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
                 f"Expected one of {sorted(self.CHAIN_LOSS_MODES)}."
             )
         raw_weights = param.get("chain_loss_weights", [0.2, 0.3, 1.0])
-        if self.chain_loss_mode == "token_mae":
+        if self.chain_loss_mode in self.TOKEN_LOSS_MODES:
             # Artificial stage weights are unused; allow None / omit.
             self.chain_loss_weights = list(raw_weights) if raw_weights is not None else []
         else:
@@ -649,7 +650,7 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             loss, parts = self._compute_unified_loss(out, real_value)
             self._last_unified_loss_parts = parts
             self._log_unified_loss_parts(epoch, iter_index, parts)
-        elif self.chain_loss_mode == "token_mae":
+        elif self.chain_loss_mode in self.TOKEN_LOSS_MODES:
             loss = self._token_mae_loss(out, real_value)
         else:
             loss = self._legacy_loss(out, real_value)
