@@ -1,0 +1,75 @@
+===== PEMS04 6:2:2 =====
+raw time series shape: (16992, 307, 1)
+number of training samples:10181
+number of validation samples:3394
+number of test samples:3394
+mean (training data): 207.21009963744956
+std (training data): 156.48002643540894
+Generating Prior Channel with Frequency Domain Filtering...
+Final Data Shape: (16992, 307, 4)
+Saved processed npz: /home/dhz/KASA-ST/datasets/PEMS04/data_in12_out12.npz
+Saved protocol audit: /home/dhz/KASA-ST/datasets/PEMS04/protocol_audit.json
+{
+  "dataset": "PEMS04",
+  "protocol": "official_6_2_2",
+  "train_ratio": 0.6,
+  "valid_ratio": 0.2,
+  "test_ratio": 0.2,
+  "history_seq_len": 12,
+  "future_seq_len": 12,
+  "num_channels": 4,
+  "channel_0": "normalized_flow",
+  "channel_1": "tod",
+  "channel_2": "dow",
+  "channel_3": "train_only_fft_filtered_weekly_prior",
+  "prior_uses_train_only": true,
+  "steps_per_day": 288,
+  "steps_per_week": 2016,
+  "train_samples": 10181,
+  "valid_samples": 3394,
+  "test_samples": 3394
+}
+===== PEMS07 6:2:2 =====
+raw time series shape: (28224, 883, 1)
+number of training samples:16921
+number of validation samples:5640
+number of test samples:5640
+mean (training data): 309.51270855188125
+std (training data): 189.5091889745957
+Generating Prior Channel with Frequency Domain Filtering...
+Final Data Shape: (28224, 883, 4)
+Saved processed npz: /home/dhz/KASA-ST/datasets/PEMS07/data_in12_out12.npz
+===== PEMS08 6:2:2 =====
+raw time series shape: (17856, 170, 1)
+number of training samples:10700
+number of validation samples:3567
+number of test samples:3566
+mean (training data): 229.6919362722215
+std (training data): 145.63681240667634
+Generating Prior Channel with Frequency Domain Filtering...
+Final Data Shape: (17856, 170, 4)
+Saved processed npz: /home/dhz/KASA-ST/datasets/PEMS08/data_in12_out12.npz
+===== PEMS-BAY 6:2:2 =====
+----------------------------------------------------------------------
+|      data_file_path = /home/dhz/KASA-ST/datasets/raw_data/PEMS-BAY/PEMS-BAY.h5|
+|                 dow = True                                         |
+|      future_seq_len = 12                                           |
+|     graph_file_path = /home/dhz/KASA-ST/datasets/raw_data/PEMS-BAY/adj_PEMS-BAY.pkl|
+|     history_seq_len = 12                                           |
+|          output_dir = /home/dhz/KASA-ST/datasets/PEMS-BAY          |
+|       steps_per_day = 288                                          |
+|      target_channel = [0]                                          |
+|                 tod = True                                         |
+|         train_ratio = 0.6                                          |
+|         valid_ratio = 0.2                                          |
+----------------------------------------------------------------------
+raw time series shape: (52116, 325, 1)
+number of training samples:31256
+number of validation samples:10419
+number of test samples:10418
+mean (training data): 62.7501818530719
+std (training data): 9.364370496816157
+Generating Prior Channel with Frequency Domain Filtering...
+Final Data Shape: (52116, 325, 4)
+Saved processed npz: /home/dhz/KASA-ST/datasets/PEMS-BAY/data_in12_out12.npz
+===== ALL DONE =====
