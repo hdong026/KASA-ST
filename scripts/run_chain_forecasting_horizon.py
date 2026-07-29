@@ -40,6 +40,16 @@ DATASET_SPECS = {
         "chain_cfg": ROOT / "examples" / "ChainForecasting" / "ChainForecasting_PEMS-BAY.py",
         "kasa_cfg": ROOT / "examples" / "KASAST_v2" / "KASAST_PEMS-BAY.py",
     },
+    "PEMS03": {
+        "slug": "pems03",
+        "chain_cfg": ROOT / "examples" / "ChainForecasting" / "ChainForecasting_PEMS03.py",
+        "kasa_cfg": ROOT / "examples" / "KASAST_v2" / "KASAST_PEMS03.py",
+    },
+    "KnowAir": {
+        "slug": "knowair",
+        "chain_cfg": ROOT / "examples" / "ChainForecasting" / "ChainForecasting_KnowAir.py",
+        "kasa_cfg": ROOT / "examples" / "KASAST_v2" / "KASAST_KnowAir.py",
+    },
 }
 
 # Filled in main() after --dataset is parsed

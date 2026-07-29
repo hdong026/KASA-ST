@@ -1,0 +1,37 @@
+raw time series shape: (11688, 184, 1)
+number of training samples:6999
+number of validation samples:2333
+number of test samples:2333
+mean (training data): 57.297234
+std (training data): 49.153446
+Generating Prior Channel with Frequency Domain Filtering...
+Final Data Shape: (11688, 184, 4)
+Saved processed npz: /home/dhz/KASA-ST/datasets/KnowAir/data_in12_out12.npz
+raw time series shape: (11688, 184, 1)
+number of training samples:6992
+number of validation samples:2331
+number of test samples:2330
+mean (training data): 57.322117
+std (training data): 49.168644
+Generating Prior Channel with Frequency Domain Filtering...
+Final Data Shape: (11688, 184, 4)
+Saved processed npz: /home/dhz/KASA-ST/datasets/KnowAir/data_in12_out24.npz
+raw time series shape: (11688, 184, 1)
+number of training samples:6977
+number of validation samples:2326
+number of test samples:2326
+mean (training data): 57.384434
+std (training data): 49.19841
+Generating Prior Channel with Frequency Domain Filtering...
+Final Data Shape: (11688, 184, 4)
+Saved processed npz: /home/dhz/KASA-ST/datasets/KnowAir/data_in12_out48.npz
+[gen] KnowAir H=12 F=12: /home/dhz/miniconda3/envs/basicts/bin/python /home/dhz/KASA-ST/scripts/data_preparation/KnowAir/generate_holost_data.py --history_seq_len 12 --future_seq_len 12 --output_dir /home/dhz/KASA-ST/datasets/KnowAir --train_ratio 0.6 --valid_ratio 0.2
+[gen] KnowAir H=12 F=24: /home/dhz/miniconda3/envs/basicts/bin/python /home/dhz/KASA-ST/scripts/data_preparation/KnowAir/generate_holost_data.py --history_seq_len 12 --future_seq_len 24 --output_dir /home/dhz/KASA-ST/datasets/KnowAir --train_ratio 0.6 --valid_ratio 0.2
+[gen] KnowAir H=12 F=48: /home/dhz/miniconda3/envs/basicts/bin/python /home/dhz/KASA-ST/scripts/data_preparation/KnowAir/generate_holost_data.py --history_seq_len 12 --future_seq_len 48 --output_dir /home/dhz/KASA-ST/datasets/KnowAir --train_ratio 0.6 --valid_ratio 0.2
+
+=== Protocol A data inspection ===
+KnowAir F=12: train/val/test=6999/2333/2333 | history=(32, 12, 184, 4) future=(32, 12, 184, 4)
+KnowAir F=24: train/val/test=6992/2331/2330 | history=(32, 12, 184, 4) future=(32, 24, 184, 4)
+KnowAir F=48: train/val/test=6977/2326/2326 | history=(32, 12, 184, 4) future=(32, 48, 184, 4)
+
+Wrote inspection table: /home/dhz/KASA-ST/results/knowair_fixed_input_horizon_data_check.csv

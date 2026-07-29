@@ -36,6 +36,18 @@ DATASET_SPECS = {
         "train_ratio": 0.6,
         "valid_ratio": 0.2,
     },
+    "PEMS03": {
+        "slug": "pems03",
+        "generate_script": ROOT / "scripts" / "data_preparation" / "PEMS03" / "generate_holost_data.py",
+        "train_ratio": 0.6,
+        "valid_ratio": 0.2,
+    },
+    "KnowAir": {
+        "slug": "knowair",
+        "generate_script": ROOT / "scripts" / "data_preparation" / "KnowAir" / "generate_holost_data.py",
+        "train_ratio": 0.6,
+        "valid_ratio": 0.2,
+    },
 }
 
 

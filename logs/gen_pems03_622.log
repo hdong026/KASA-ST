@@ -1,0 +1,37 @@
+raw time series shape: (26208, 358, 1)
+number of training samples:15711
+number of validation samples:5237
+number of test samples:5237
+mean (training data): 181.37324561746377
+std (training data): 144.4023243785617
+Generating Prior Channel with Frequency Domain Filtering...
+Final Data Shape: (26208, 358, 4)
+Saved processed npz: /home/dhz/KASA-ST/datasets/PEMS03/data_in12_out12.npz
+raw time series shape: (26208, 358, 1)
+number of training samples:15704
+number of validation samples:5235
+number of test samples:5234
+mean (training data): 181.33588554507045
+std (training data): 144.39464310196774
+Generating Prior Channel with Frequency Domain Filtering...
+Final Data Shape: (26208, 358, 4)
+Saved processed npz: /home/dhz/KASA-ST/datasets/PEMS03/data_in12_out24.npz
+raw time series shape: (26208, 358, 1)
+number of training samples:15689
+number of validation samples:5230
+number of test samples:5230
+mean (training data): 181.26407483186847
+std (training data): 144.38570839946127
+Generating Prior Channel with Frequency Domain Filtering...
+Final Data Shape: (26208, 358, 4)
+Saved processed npz: /home/dhz/KASA-ST/datasets/PEMS03/data_in12_out48.npz
+[gen] PEMS03 H=12 F=12: /home/dhz/miniconda3/envs/basicts/bin/python /home/dhz/KASA-ST/scripts/data_preparation/PEMS03/generate_holost_data.py --history_seq_len 12 --future_seq_len 12 --output_dir /home/dhz/KASA-ST/datasets/PEMS03 --train_ratio 0.6 --valid_ratio 0.2
+[gen] PEMS03 H=12 F=24: /home/dhz/miniconda3/envs/basicts/bin/python /home/dhz/KASA-ST/scripts/data_preparation/PEMS03/generate_holost_data.py --history_seq_len 12 --future_seq_len 24 --output_dir /home/dhz/KASA-ST/datasets/PEMS03 --train_ratio 0.6 --valid_ratio 0.2
+[gen] PEMS03 H=12 F=48: /home/dhz/miniconda3/envs/basicts/bin/python /home/dhz/KASA-ST/scripts/data_preparation/PEMS03/generate_holost_data.py --history_seq_len 12 --future_seq_len 48 --output_dir /home/dhz/KASA-ST/datasets/PEMS03 --train_ratio 0.6 --valid_ratio 0.2
+
+=== Protocol A data inspection ===
+PEMS03 F=12: train/val/test=15711/5237/5237 | history=(32, 12, 358, 4) future=(32, 12, 358, 4)
+PEMS03 F=24: train/val/test=15704/5235/5234 | history=(32, 12, 358, 4) future=(32, 24, 358, 4)
+PEMS03 F=48: train/val/test=15689/5230/5230 | history=(32, 12, 358, 4) future=(32, 48, 358, 4)
+
+Wrote inspection table: /home/dhz/KASA-ST/results/pems03_fixed_input_horizon_data_check.csv
