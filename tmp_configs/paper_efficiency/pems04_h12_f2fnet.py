@@ -131,25 +131,20 @@ CFG.TEST.DATA.SHUFFLE = False
 CFG.TEST.DATA.NUM_WORKERS = 2
 CFG.TEST.DATA.PIN_MEMORY = False
 
-# ===== fixed_input_horizon overrides (auto-generated) =====
+# ===== paper_efficiency f2fnet overrides =====
 CFG.ENV.SEED = 1
-if hasattr(CFG, 'SEED'):
-    CFG.SEED = 1
-if hasattr(CFG, 'TRAIN') and hasattr(CFG.TRAIN, 'SEED'):
-    CFG.TRAIN.SEED = 1
-CFG.DATASET_NAME = "PEMS04"
-CFG.TRAIN.DATA.DIR = "datasets/PEMS04"
-CFG.VAL.DATA.DIR = "datasets/PEMS04"
-CFG.TEST.DATA.DIR = "datasets/PEMS04"
-CFG.MODEL.PARAM["adj_mx_path"] = "datasets/PEMS04/adj_mx.pkl"
 CFG.DATASET_INPUT_LEN = 12
 CFG.DATASET_OUTPUT_LEN = 12
-CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("checkpoints/fixed_input_horizon_pems04/h12/chain_interleaved_progressive_spatial_state_adapter_fixed_token_loss_seed1")
+CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("checkpoints/paper_efficiency/f2fnet_seed1")
 CFG.MODEL.FORWARD_FEATURES = [0, 1, 2, 3]
 CFG.MODEL.TARGET_FEATURES = [0]
 CFG.MODEL.PARAM["input_len"] = 12
 CFG.MODEL.PARAM["output_len"] = 12
+CFG.MODEL.PARAM["node_size"] = 307
 CFG.TEST.EVALUATION_HORIZONS = list(range(1, 13))
+CFG.TRAIN.DATA.BATCH_SIZE = 32
+CFG.VAL.DATA.BATCH_SIZE = 32
+CFG.TEST.DATA.BATCH_SIZE = 32
 CFG.MODEL.NAME = 'ChainForecasting_StateAdapterFixed_TokenMAE'
 CFG.MODEL.PARAM["use_patch_branch"] = True
 CFG.MODEL.PARAM["use_downsample_branch"] = True

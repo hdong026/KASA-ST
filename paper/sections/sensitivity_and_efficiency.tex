@@ -1,0 +1,45 @@
+\section{Sensitivity and Efficiency Analysis}
+\label{app:sensitivity-efficiency}
+
+This appendix complements the main-paper efficiency comparison with a brief stage-schedule discussion, a controlled spatial-configuration sensitivity study on PEMS04, and the exact profiling protocol used to obtain computational measurements.
+
+\subsection{Number of Stages and Efficiency Trade-Off}
+\label{app:stage-efficiency}
+
+We compare three horizon schedules derived from the same F2FNet backbone under a forecasting horizon of $H{=}12$: the single-stage schedule $[H]$, the two-stage schedule $[H/2,H]$, and the full three-stage schedule $[H/4,H/2,H]$. Increasing the number of stages raises parameter count, peak training-step memory, and inference latency, while enabling progressive temporal refinement and progressive adaptive spatial interaction. We do not duplicate the numerical table here; the measured parameter counts, peak allocated GPU memory, and median inference latencies are reported in Table~\ref{tab:efficiency} of the main manuscript.
+
+\subsection{Spatial Configuration Sensitivity}
+\label{app:spatial-sensitivity}
+
+We next vary only the progressive spatial schedule while freezing every other final-model setting of \texttt{chain\_interleaved\_progressive\_spatial\_state\_adapter\_fixed\_token\_loss}, including the condition-only forecast-state adapter (hidden dimension $16$, $\varepsilon{=}0.02$), token-normalized multi-stage loss without manual stage weights, \texttt{use\_prev\_condition{=}True}, \texttt{adaptive\_only} spatial mode, and all temporal branches. The Light configuration uses ratios $[0.25,0.5,1.0]$, top-$k$ $[4,8,16]$, and residual scales $[0.02,0.04,0.08]$; the Default configuration uses ratios $[0.25,0.5,1.0]$, top-$k$ $[8,16,32]$, and residual scales $[0.03,0.06,0.10]$; the Strong configuration uses ratios $[0.5,0.75,1.0]$, top-$k$ $[16,24,40]$, and residual scales $[0.05,0.08,0.12]$. Table~\ref{tab:spatial-sensitivity} will summarize MAE together with parameter count, peak memory, and inference latency once the Light and Strong PEMS04 ($H{=}12$, seed~$1$) runs are verified; until then, only verified compute cells for Default are retained as source comments beside the table skeleton.
+
+\begin{table}[t]
+\centering
+\caption{Progressive spatial sensitivity on PEMS04 ($H{=}12$, seed~$1$). All rows share the final condition-only adapter and token-normalized loss; only capacity ratios, stage-wise top-$k$, and residual scales differ.}
+\label{tab:spatial-sensitivity}
+\fontsize{8.5pt}{10pt}\selectfont
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.12}
+\begin{tabular}{lccccccc}
+\toprule
+\textbf{Setting}
+& \textbf{Ratios}
+& \textbf{Top-$k$}
+& \textbf{Alphas}
+& \textbf{MAE}
+& \makecell{\textbf{Params}\\\textbf{(M)}}
+& \makecell{\textbf{Peak Mem.}\\\textbf{(MiB)}}
+& \makecell{\textbf{Infer.}\\\textbf{(ms/batch)}} \\
+\midrule
+% Fill only from verified seed-1 outputs (see paper/APPENDIX_TODO.md).
+% Light   & $[0.25,0.5,1.0]$ & $[4,8,16]$   & $[0.02,0.04,0.08]$ &  &  &  &  \\
+% Default & $[0.25,0.5,1.0]$ & $[8,16,32]$  & $[0.03,0.06,0.10]$ &  & 2.212 & 2596.5 & 14.413 \\
+% Strong  & $[0.5,0.75,1.0]$ & $[16,24,40]$ & $[0.05,0.08,0.12]$ &  &  &  &  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Efficiency Measurement Protocol}
+\label{app:efficiency-protocol}
+
+All computational profiles are obtained with \texttt{scripts/profile\_paper\_efficiency.py} under a fixed protocol. Unless otherwise stated, measurements use a single NVIDIA GeForce RTX~4090, batch size~$32$, and FP32 precision. Each model is profiled in an isolated subprocess. Before measurement we call \texttt{gc.collect()}, \texttt{torch.cuda.empty\_cache()}, \texttt{torch.cuda.reset\_peak\_memory\_stats()}, and \texttt{torch.cuda.synchronize()}. Peak memory denotes the maximum allocated GPU memory (\texttt{torch.cuda.max\_memory\_allocated()}) observed over timed full training steps after warm-up; each training step includes host-to-device transfer, \texttt{optimizer.zero\_grad(set\_to\_none{=}True)}, model forward, the model's official training loss, backward, \texttt{optimizer.step()}, and a final CUDA synchronization. By default we use $20$ warm-up training steps (untimed), then up to $40$ timed training steps for the peak-memory window. Inference latency is the median model-forward time per batch after at least $20$ warm-up inference batches and up to $100$ timed batches, with \texttt{torch.cuda.synchronize()} at both timing boundaries; the timed region includes host-to-device transfer and the forward pass, and excludes checkpoint loading, metric aggregation, and result saving. Dataset construction and DataLoader iteration outside the timed step are not charged to the reported latency.
