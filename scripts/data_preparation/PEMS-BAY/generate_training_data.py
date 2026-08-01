@@ -103,8 +103,8 @@ if __name__ == "__main__":
     HISTORY_SEQ_LEN = 48
     FUTURE_SEQ_LEN = 12
 
-    TRAIN_RATIO = 0.7
-    VALID_RATIO = 0.1
+    TRAIN_RATIO = 0.6
+    VALID_RATIO = 0.2
     TARGET_CHANNEL = [0]                   # target channel(s)
 
     DATASET_NAME = "PEMS-BAY"
