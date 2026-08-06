@@ -34,6 +34,7 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         "token_mae",
         "token_normalized",
         "dynamic_resolution_token",
+        "one_shot_resolution_token",
     }
     TOKEN_LOSS_MODES = {"token_mae", "token_normalized"}
 
@@ -49,8 +50,9 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
                 f"Expected one of {sorted(self.CHAIN_LOSS_MODES)}."
             )
         raw_weights = param.get("chain_loss_weights", [0.2, 0.3, 1.0])
-        if self.chain_loss_mode in self.TOKEN_LOSS_MODES or self.chain_loss_mode == (
-            "dynamic_resolution_token"
+        if self.chain_loss_mode in self.TOKEN_LOSS_MODES or self.chain_loss_mode in (
+            "dynamic_resolution_token",
+            "one_shot_resolution_token",
         ):
             # Artificial stage weights are unused; allow None / omit.
             self.chain_loss_weights = list(raw_weights) if raw_weights is not None else []
@@ -420,6 +422,27 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             model.dual_update_from_output(out)
         return loss
 
+    def _one_shot_resolution_token_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
+        """Intermediate matched + final full loss for OneShotAdaptiveResolutionF2FNet."""
+        if "dynamic_loss" in out and out["dynamic_loss"] is not None:
+            return out["dynamic_loss"]
+        y = real_value[..., : out["pred"].shape[-1]]
+        from basicts.archs.arch_zoo.ChainForecasting_arch.dynamic_resolution_token_loss import (
+            one_shot_resolution_total_loss,
+        )
+
+        parts = one_shot_resolution_total_loss(
+            intermediate_preds=list(out.get("matched_preds") or []),
+            intermediate_targets=list(out.get("matched_targets") or []),
+            intermediate_masks=list(out.get("matched_masks") or []),
+            final_pred=out["pred"],
+            final_target=y,
+            expected_optional_cost=out["expected_optional_cost"],
+            optional_budget=out["target_budget"],
+            dual=out["dual"],
+        )
+        return parts["loss"]
+
     def _legacy_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
         preds = out["chain_preds"]
         targets = [ChainForecasting.pool_target(real_value, k) for k in self.chain_lengths]
@@ -687,6 +710,8 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             self._log_unified_loss_parts(epoch, iter_index, parts)
         elif self.chain_loss_mode == "dynamic_resolution_token":
             loss = self._dynamic_resolution_token_loss(out, real_value)
+        elif self.chain_loss_mode == "one_shot_resolution_token":
+            loss = self._one_shot_resolution_token_loss(out, real_value)
         elif self.chain_loss_mode in self.TOKEN_LOSS_MODES:
             loss = self._token_mae_loss(out, real_value)
         else:

@@ -295,6 +295,25 @@ VARIANT_SPECS: dict[str, dict] = {
         "budget_dual_lr": 0.01,
         "hierarchy_cache_dir": "generated/cache/adaptive_resolution_hierarchies",
     },
+    # One-shot adaptive resolution planning (low-latency; no iterative controller)
+    "chain_one_shot_adaptive_resolution_planning_condition_adapter_token_loss": {
+        "is_chain": False,
+        "model_name": "OneShotAdaptiveResolutionF2FNet",
+        "model_arch": "OneShotAdaptiveResolutionF2FNet",
+        "chain_loss_mode": "one_shot_resolution_token",
+        "chain_loss_weights": None,
+        "thinking_intensity": 0.5,
+        "planner_hidden_dim": 32,
+        "executor_hidden_dim": 32,
+        "planner_temperature": 1.0,
+        "forecast_state_adapter_hidden_dim": 16,
+        "forecast_state_adapter_epsilon": 0.02,
+        "clustering_seed": 0,
+        "budget_base": 0.15,
+        "budget_scale": 0.45,
+        "budget_dual_lr": 0.01,
+        "hierarchy_cache_dir": "generated/cache/adaptive_resolution_hierarchies",
+    },
     # Adaptive-resolution gates on forwarded condition only (pilot; F2FNet backbone unchanged)
     "chain_interleaved_adaptive_resolution_gate_state_adapter_fixed_token_loss": {
         "is_chain": True,
@@ -513,6 +532,21 @@ def generate_temp_config(horizon: int, variant: str, seed: int) -> Path:
             "progressive_spatial_ratios",
             "progressive_spatial_topks",
             "progressive_spatial_alphas",
+        ):
+            lines.append(f'CFG.MODEL.PARAM.pop("{_k}", None)')
+    if model_arch == "OneShotAdaptiveResolutionF2FNet":
+        lines.append("from basicts.archs import OneShotAdaptiveResolutionF2FNet")
+        lines.append("CFG.MODEL.ARCH = OneShotAdaptiveResolutionF2FNet")
+        for _k in (
+            "chain_lengths",
+            "temporal_resolution_candidates",
+            "spatial_resolution_candidates",
+            "graph_resolution_capacities",
+            "progressive_spatial_ratios",
+            "progressive_spatial_topks",
+            "progressive_spatial_alphas",
+            "halt_threshold",
+            "controller_hidden_dim",
         ):
             lines.append(f'CFG.MODEL.PARAM.pop("{_k}", None)')
     for key, val in spec.items():
