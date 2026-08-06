@@ -76,6 +76,44 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
         backbone_args.setdefault("use_adaptive_adj", True)
         backbone_args.setdefault("architecture_mode", "chain")
 
+        # Strip budget-only keys so ChainForecasting init is not polluted.
+        for drop in (
+            "candidate_routes",
+            "forced_route",
+            "route_selection_mode",
+            "route_granularity",
+            "route_cost_type",
+            "route_cost_file",
+            "inference_intensity",
+            "planner_hidden_dim",
+            "training_phase",
+            "loss_mode",
+            "route_sampling",
+            "freeze_forecasting_backbone",
+            "run_signature",
+            "experiment_tag",
+            "oracle_file",
+            "init_checkpoint",
+            "backbone_lr",
+            "planner_lr",
+            "chain_loss_mode",
+            "chain_loss_weights",
+            "model_arch",
+            "model_name",
+            "is_chain",
+        ):
+            backbone_args.pop(drop, None)
+
+        self._progressive_ratios = list(
+            backbone_args.get("progressive_spatial_ratios", [0.25, 0.5, 1.0])
+        )
+        self._progressive_topks = list(
+            backbone_args.get("progressive_spatial_topks", [8, 16, 32])
+        )
+        self._progressive_alphas = list(
+            backbone_args.get("progressive_spatial_alphas", [0.03, 0.06, 0.10])
+        )
+
         self.backbone = ChainForecasting(**backbone_args)
         self.full_resolutions = list(full_route)
         self.res_to_index = {int(k): i for i, k in enumerate(self.full_resolutions)}
@@ -223,9 +261,13 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
         self,
         history_data: torch.Tensor,
         route: list[int],
+        return_trace: bool = False,
     ) -> dict[str, Any]:
         """Run KASA stages for ``route`` using shared supernet modules."""
         chain_preds: list[torch.Tensor] = []
+        temporal_preds: list[torch.Tensor] = []
+        conditions: list[torch.Tensor | None] = []
+        spatial_cfgs: list[dict[str, Any]] = []
         prev_forecast = None
         bb = self.backbone
         spatial_codebook = bb._spatial_codebook()
@@ -236,7 +278,11 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
             is_last = stage_i == len(route) - 1
             previous_state = prev_forecast
             prev_up = None
-            if previous_state is not None and bb.use_prev_condition:
+            if (
+                previous_state is not None
+                and bb.use_prev_condition
+                and bb.propagation_mode == "forecast_state"
+            ):
                 prev_up = interpolate_forecast(previous_state, int(res))
 
             stage_ratio = float(res) / float(self.output_len)
@@ -259,6 +305,7 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
                 spatial_codebook=spatial_codebook,
                 **router_kwargs,
             )
+            temporal_preds.append(t_k)
             # Progressive spatial by resolution tier (not route stage index)
             if bb.spatial_placement == "interleaved_progressive":
                 z_raw = bb._apply_progressive_spatial_refine(
@@ -267,21 +314,60 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
             else:
                 z_raw = t_k
 
+            # Match formal ChainForecasting condition_only path exactly:
+            # adapter runs only at supernet step_idx == 1 (see ChainForecasting_arch.py
+            # `_forward_chain`: `if step_idx == 1`). For default [3,6,12] this is res 6.
             supervised_state = z_raw
             next_prev = z_raw
+            adapter_used = False
             if (
                 bb.forecast_state_adapter is not None
                 and previous_state is not None
-                and not is_last
                 and bb.forecast_state_adapter_mode == "condition_only"
+                and idx == 1
             ):
                 next_prev = bb.forecast_state_adapter(
                     current_state=z_raw,
                     previous_state=previous_state,
                     stage_ratio=stage_ratio,
                 )
+                adapter_used = True
             chain_preds.append(supervised_state)
+            conditions.append(next_prev if not is_last else None)
             prev_forecast = next_prev
+
+            if return_trace and bb.spatial_placement == "interleaved_progressive":
+                mod = bb.progressive_spatial_modules[idx]
+                spatial_cfgs.append(
+                    {
+                        "resolution": int(res),
+                        "supernet_index": idx,
+                        "ratio": float(self._progressive_ratios[idx])
+                        if idx < len(self._progressive_ratios)
+                        else None,
+                        "configured_topk": int(self._progressive_topks[idx])
+                        if idx < len(self._progressive_topks)
+                        else None,
+                        "configured_alpha": float(self._progressive_alphas[idx])
+                        if idx < len(self._progressive_alphas)
+                        else None,
+                        "module_class": type(mod).__name__,
+                        "dyn_hidden_dim": getattr(mod, "dyn_hidden_dim", None),
+                        "adp_hidden_dim": getattr(mod, "adp_hidden_dim", None),
+                        "dyn_topk": getattr(mod, "dyn_topk", None),
+                        "adp_topk": getattr(mod, "adp_topk", None),
+                        "dyn_alpha": getattr(mod, "dyn_alpha", None),
+                        "adp_alpha": getattr(mod, "adp_alpha", None),
+                        "hybrid_alpha": getattr(mod, "hybrid_alpha", None),
+                        "adapter_used": adapter_used,
+                        "condition_present": prev_up is not None,
+                        "step_input_channels": (
+                            "cond_encoders"
+                            if prev_up is not None
+                            else "base_encoders_only"
+                        ),
+                    }
+                )
 
         if not chain_preds:
             raise RuntimeError("empty route execution")
@@ -292,11 +378,16 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
             )
         if final.shape[2] != self.node_size:
             raise RuntimeError("node dimension changed during route execution")
-        return {
+        out = {
             "pred": final,
             "chain_preds": chain_preds,
             "chain_resolutions": list(route),
+            "temporal_preds": temporal_preds,
+            "downstream_conditions": conditions,
         }
+        if return_trace:
+            out["spatial_cfgs"] = spatial_cfgs
+        return out
 
     def forward(
         self,
@@ -317,8 +408,18 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
         device = history.device
         dtype = history.dtype
 
+        # Forced mode must dominate sandwich / random sampling.
+        forced_active = (
+            self.forced_route is not None or self.route_selection_mode == "forced"
+        )
+        if forced_active and sandwich_routes is not None:
+            raise RuntimeError(
+                "forced-route mode received sandwich_routes; "
+                "forced must override sandwich/random sampling"
+            )
+
         # Supernet sandwich: execute provided routes (caller accumulates loss)
-        if sandwich_routes is not None:
+        if sandwich_routes is not None and not forced_active:
             outs = []
             for route in sandwich_routes:
                 validate_route(route, horizon=self.output_len)
@@ -379,6 +480,38 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
             route = list(self.candidate_routes[rid])
         executed = self._execute_route(history, route)
 
+        # Forced-route hard assertions (never silently diverge).
+        if forced_active:
+            if self.forced_route is None:
+                raise RuntimeError("forced mode requires forced_route")
+            if list(route) != list(self.forced_route):
+                raise RuntimeError(
+                    f"selected_route {route} != forced_route {self.forced_route}"
+                )
+            if list(executed["chain_resolutions"]) != list(self.forced_route):
+                raise RuntimeError(
+                    f"chain_resolutions {executed['chain_resolutions']} "
+                    f"!= forced_route {self.forced_route}"
+                )
+            if len(executed["chain_resolutions"]) != len(self.forced_route):
+                raise RuntimeError(
+                    f"actual_stage_count {len(executed['chain_resolutions'])} "
+                    f"!= len(forced_route) {len(self.forced_route)}"
+                )
+            if executed["pred"].shape[1] != self.output_len:
+                raise RuntimeError(
+                    f"final forecast length {executed['pred'].shape[1]} "
+                    f"!= horizon {self.output_len}"
+                )
+            if not self._logged:
+                print(
+                    "[budget_f2f forced] "
+                    f"executed_routes={[list(route)]} "
+                    f"chain_resolutions={list(executed['chain_resolutions'])} "
+                    f"actual_stage_count={len(executed['chain_resolutions'])}"
+                )
+                self._logged = True
+
         result = {
             "pred": executed["pred"],
             "prediction": executed["pred"],
@@ -386,6 +519,8 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
             "chain_resolutions": executed["chain_resolutions"],
             "selected_route_id": plan["selected_route_id"],
             "selected_route": route,
+            "actual_stage_count": len(executed["chain_resolutions"]),
+            "executed_routes": [list(route)],
             "route_logits": plan["route_logits"],
             "route_probs": plan["route_probs"],
             "feasible_mask": plan["feasible_mask"],
@@ -400,6 +535,7 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
                 "stage_count": len(route),
                 "batch_route_id": rid,
                 "node_size": self.node_size,
+                "mode": "forced" if forced_active else "planned",
             },
         }
         if oracle_route_id is not None:

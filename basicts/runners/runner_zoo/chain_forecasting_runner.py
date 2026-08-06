@@ -260,20 +260,31 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             "stagewise_sequence": self.stagewise_sequence if self.stagewise_enabled else "full",
         }
         # Supernet sandwich: CPU-side route lists (no GPU route sync).
-        # Skip when forced-route equivalence / route_sampling=none.
+        # Forced mode must never receive sandwich_routes.
         forced = getattr(self.model, "forced_route", None)
+        route_mode = str(getattr(self.model, "route_selection_mode", "")).lower()
         route_sampling = str(
             getattr(self.model, "route_sampling", self.budget_route_sampling)
         ).lower()
+        forced_active = forced is not None or route_mode == "forced"
         if (
             train
             and self.budget_training_phase == "supernet"
             and self.chain_loss_mode in {"baseline_compatible", "dynamic_fair"}
             and getattr(self.model, "candidate_routes", None) is not None
-            and forced is None
+            and not forced_active
             and route_sampling not in {"none", ""}
         ):
             fwd_kwargs["sandwich_routes"] = self._sample_budget_sandwich_routes()
+        elif forced_active and train and not getattr(self, "_budget_forced_logged", False):
+            self.logger.info(
+                "[budget_f2f] forced mode active: forced_route=%s "
+                "route_selection_mode=%s training_phase=%s (sandwich disabled)",
+                list(forced) if forced is not None else None,
+                route_mode,
+                self.budget_training_phase,
+            )
+            self._budget_forced_logged = True
         # Planner / joint: attach oracle label when available (batch-constant intensity)
         if (
             train

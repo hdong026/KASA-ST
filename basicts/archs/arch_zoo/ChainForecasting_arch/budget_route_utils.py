@@ -139,6 +139,71 @@ def route_to_key(route: list[int]) -> str:
     return ",".join(str(int(x)) for x in route)
 
 
+def forced_route_tag(route: list[int] | None) -> str | None:
+    """Canonical id for a forced route, e.g. forced_12 / forced_3-6-12."""
+    if route is None:
+        return None
+    return "forced_" + "-".join(str(int(x)) for x in route)
+
+
+def candidate_routes_tag(routes: list[list[int]]) -> str:
+    return "+".join(route_to_key(r).replace(",", "-") for r in routes)
+
+
+def build_run_signature(
+    *,
+    dataset: str,
+    horizon: int,
+    seed: int,
+    base_variant: str,
+    route_selection_mode: str,
+    forced_route: list[int] | None,
+    training_phase: str,
+    loss_mode: str,
+    candidate_routes: list[list[int]],
+    route_granularity: str,
+    inference_intensity: float,
+    route_cost_type: str,
+    route_cost_file: str | None = None,
+    run_tag: str | None = None,
+) -> dict[str, Any]:
+    """Full experiment identity; used for paths, skip, and result rows."""
+    fr_tag = forced_route_tag(forced_route)
+    if fr_tag is not None:
+        experiment_tag = fr_tag
+    else:
+        experiment_tag = (
+            f"{training_phase}_eta{float(inference_intensity):.2f}_{loss_mode}"
+        )
+        if run_tag:
+            experiment_tag = f"{experiment_tag}_{run_tag}"
+    sig_parts = [
+        f"ds={dataset}",
+        f"H={int(horizon)}",
+        f"seed={int(seed)}",
+        f"variant={base_variant}",
+        f"mode={route_selection_mode}",
+        f"forced={route_to_key(forced_route) if forced_route else 'none'}",
+        f"phase={training_phase}",
+        f"loss={loss_mode}",
+        f"cands={candidate_routes_tag(candidate_routes)}",
+        f"gran={route_granularity}",
+        f"eta={float(inference_intensity):.4f}",
+        f"cost={route_cost_type}",
+        f"cost_file={Path(route_cost_file).name if route_cost_file else 'none'}",
+    ]
+    if run_tag:
+        sig_parts.append(f"tag={run_tag}")
+    run_signature = "|".join(sig_parts)
+    return {
+        "run_signature": run_signature,
+        "experiment_tag": experiment_tag,
+        "forced_route_tag": fr_tag,
+        "forced_route": list(forced_route) if forced_route else None,
+        "candidate_routes": [list(r) for r in candidate_routes],
+    }
+
+
 def sample_sandwich_routes(
     candidates: list[list[int]],
     rng: Any | None = None,

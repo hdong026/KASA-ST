@@ -71,6 +71,32 @@ def main() -> int:
     )
     n_full = sum(p.numel() for p in full.parameters())
     print(f"forced_full_route_params: {n_full} ({n_full/1e6:.3f}M)")
+
+    # Assertion: chain_resolutions must match forced_route
+    bad = BudgetConditionedAdaptiveF2FNet(
+        **synthetic_budget_f2f_kwargs(
+            node_size=n, output_len=h, forced_route=[12], route_selection_mode="forced"
+        )
+    )
+    orig_exec = bad._execute_route
+
+    def _corrupt_exec(history_data, route):
+        out = orig_exec(history_data, route)
+        out = dict(out)
+        out["chain_resolutions"] = [3, 6, 12]
+        return out
+
+    bad._execute_route = _corrupt_exec  # type: ignore[method-assign]
+    raised = False
+    try:
+        with torch.no_grad():
+            _ = bad(history_data=torch.randn(1, p, n, 4), train=False, return_all=True)
+    except RuntimeError as exc:
+        raised = True
+        print(f"forced_assertion_ok: {exc}")
+    if not raised:
+        print("ERROR: expected forced-route assertion to fire")
+        return 1
     return 0
 
 
