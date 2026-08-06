@@ -35,6 +35,8 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         "token_normalized",
         "dynamic_resolution_token",
         "one_shot_resolution_token",
+        "baseline_compatible",
+        "dynamic_fair",
     }
     TOKEN_LOSS_MODES = {"token_mae", "token_normalized"}
 
@@ -53,6 +55,8 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         if self.chain_loss_mode in self.TOKEN_LOSS_MODES or self.chain_loss_mode in (
             "dynamic_resolution_token",
             "one_shot_resolution_token",
+            "baseline_compatible",
+            "dynamic_fair",
         ):
             # Artificial stage weights are unused; allow None / omit.
             self.chain_loss_weights = list(raw_weights) if raw_weights is not None else []
@@ -142,6 +146,47 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         )
         self._stagewise_trainable_info: dict = {}
 
+        # Budget-conditioned adaptive F2F controls (no-op for other variants)
+        self.budget_training_phase = str(param.get("training_phase", "")).lower()
+        self.budget_route_sampling = str(param.get("route_sampling", "sandwich")).lower()
+        self.budget_oracle_file = param.get("oracle_file")
+        self.budget_freeze_backbone = bool(param.get("freeze_forecasting_backbone", False))
+        self.budget_inference_intensity = float(param.get("inference_intensity", 0.5))
+        self._budget_oracle_by_index: dict[tuple[int, float], int] | None = None
+        self._budget_f2f_logged_once = False
+        if self.budget_oracle_file:
+            self._load_budget_oracle(self.budget_oracle_file)
+        if self.budget_freeze_backbone and hasattr(self.model, "freeze_backbone"):
+            self.model.freeze_backbone(True)
+
+    def _load_budget_oracle(self, path: str) -> None:
+        import json
+        from pathlib import Path
+
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        records = data.get("records", data)
+        table: dict[tuple[int, float], int] = {}
+        for rec in records:
+            key = (int(rec["sample_index"]), float(rec["intensity"]))
+            table[key] = int(rec["oracle_route_id"])
+        self._budget_oracle_by_index = table
+
+    def _sample_budget_sandwich_routes(self) -> list[list[int]]:
+        from basicts.archs.arch_zoo.ChainForecasting_arch.budget_route_utils import (
+            sample_sandwich_routes,
+        )
+
+        candidates = list(getattr(self.model, "candidate_routes", []))
+        if not candidates:
+            raise ValueError("Budget F2F model has empty candidate_routes")
+        if self.budget_route_sampling == "random":
+            import random
+
+            return [list(random.choice(candidates))]
+        if self.budget_route_sampling == "none":
+            return [list(candidates[-1])]
+        return sample_sandwich_routes(candidates)
+
     def _reset_val_unified_diag(self) -> None:
         self._val_unified_diag = {
             "count": 0,
@@ -202,18 +247,62 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         history_data = self.select_input_features(history_data)
         future_data_4_dec = self.select_input_features(future_data)
 
-        out = self.model(
-            history_data=history_data,
-            future_data=future_data_4_dec,
-            batch_seen=iter_num,
-            epoch=epoch,
-            train=train,
-            return_all=True,
-            return_intermediates=self.stagewise_enabled,
-            stagewise_stage=self.stagewise_stage if self.stagewise_enabled else None,
-            detach_previous=self.stagewise_detach_previous if self.stagewise_enabled else True,
-            stagewise_sequence=self.stagewise_sequence if self.stagewise_enabled else "full",
-        )
+        fwd_kwargs = {
+            "history_data": history_data,
+            "future_data": future_data_4_dec,
+            "batch_seen": iter_num,
+            "epoch": epoch,
+            "train": train,
+            "return_all": True,
+            "return_intermediates": self.stagewise_enabled,
+            "stagewise_stage": self.stagewise_stage if self.stagewise_enabled else None,
+            "detach_previous": self.stagewise_detach_previous if self.stagewise_enabled else True,
+            "stagewise_sequence": self.stagewise_sequence if self.stagewise_enabled else "full",
+        }
+        # Supernet sandwich: CPU-side route lists (no GPU route sync).
+        # Skip when forced-route equivalence / route_sampling=none.
+        forced = getattr(self.model, "forced_route", None)
+        route_sampling = str(
+            getattr(self.model, "route_sampling", self.budget_route_sampling)
+        ).lower()
+        if (
+            train
+            and self.budget_training_phase == "supernet"
+            and self.chain_loss_mode in {"baseline_compatible", "dynamic_fair"}
+            and getattr(self.model, "candidate_routes", None) is not None
+            and forced is None
+            and route_sampling not in {"none", ""}
+        ):
+            fwd_kwargs["sandwich_routes"] = self._sample_budget_sandwich_routes()
+        # Planner / joint: attach oracle label when available (batch-constant intensity)
+        if (
+            train
+            and self._budget_oracle_by_index is not None
+            and self.budget_training_phase in {"planner", "joint"}
+        ):
+            # Without per-sample dataset indices in this runner, use intensity-keyed
+            # majority oracle as a batch constant (offline file still drives CE).
+            intensity = float(
+                getattr(self.model, "inference_intensity", self.budget_inference_intensity)
+            )
+            matching = [
+                rid
+                for (idx, eta), rid in self._budget_oracle_by_index.items()
+                if abs(eta - intensity) < 1e-8
+            ]
+            if matching:
+                # Mode of oracle ids under this intensity
+                from collections import Counter
+
+                rid = Counter(matching).most_common(1)[0][0]
+                fwd_kwargs["oracle_route_id"] = torch.full(
+                    (history_data.shape[0],),
+                    int(rid),
+                    device=history_data.device,
+                    dtype=torch.long,
+                )
+
+        out = self.model(**fwd_kwargs)
         self._last_chain_out = out
         prediction_data = out["pred"]
         real_for_metric = future_data_4_dec
@@ -443,6 +532,97 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         )
         return parts["loss"]
 
+    def _baseline_compatible_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
+        from basicts.archs.arch_zoo.ChainForecasting_arch.budget_conditioned_f2f_loss import (
+            baseline_compatible_token_mae,
+        )
+
+        if out.get("sandwich_outputs"):
+            losses = []
+            for so in out["sandwich_outputs"]:
+                losses.append(
+                    baseline_compatible_token_mae(
+                        list(so["chain_preds"]),
+                        list(so["chain_resolutions"]),
+                        real_value,
+                        null_val=self.null_val,
+                    )
+                )
+            return sum(losses) / float(len(losses))
+
+        resolutions = out.get("chain_resolutions")
+        if resolutions is None:
+            resolutions = list(self.chain_lengths)
+        return baseline_compatible_token_mae(
+            list(out["chain_preds"]),
+            list(resolutions),
+            real_value,
+            null_val=self.null_val,
+        )
+
+    def _dynamic_fair_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
+        from basicts.archs.arch_zoo.ChainForecasting_arch.budget_conditioned_f2f_loss import (
+            dynamic_fair_total_loss,
+        )
+
+        if out.get("sandwich_outputs"):
+            losses = []
+            last_parts = None
+            for so in out["sandwich_outputs"]:
+                parts = dynamic_fair_total_loss(
+                    final_pred=so["pred"],
+                    full_target=real_value,
+                    chain_preds=list(so["chain_preds"]),
+                    chain_resolutions=list(so["chain_resolutions"]),
+                    route_logits=out.get("route_logits"),
+                    oracle_route_id=out.get("oracle_route_id"),
+                    selected_cost=out.get("selected_cost"),
+                    budget=out.get("budget"),
+                    null_val=self.null_val,
+                    lambda_imitation=0.0,  # supernet: no planner CE
+                )
+                losses.append(parts["loss"])
+                last_parts = parts
+            loss = sum(losses) / float(len(losses))
+            if last_parts is not None:
+                self._last_budget_f2f_loss_parts = {
+                    k: float(v.detach().cpu()) if torch.is_tensor(v) else float(v)
+                    for k, v in last_parts.items()
+                    if k != "loss" and (torch.is_tensor(v) or isinstance(v, (int, float)))
+                }
+                self._last_budget_f2f_loss_parts["selected_route"] = "sandwich"
+                self._last_budget_f2f_loss_parts["stage_count"] = float(
+                    len(out.get("chain_resolutions") or [])
+                )
+            return loss
+
+        if "loss_terms" in out and out["loss_terms"] is not None and "loss" in out["loss_terms"]:
+            parts = out["loss_terms"]
+            loss = parts["loss"]
+        else:
+            parts = dynamic_fair_total_loss(
+                final_pred=out["pred"],
+                full_target=real_value,
+                chain_preds=list(out["chain_preds"]),
+                chain_resolutions=list(out.get("chain_resolutions") or self.chain_lengths),
+                route_logits=out.get("route_logits"),
+                oracle_route_id=out.get("oracle_route_id"),
+                selected_cost=out.get("selected_cost"),
+                budget=out.get("budget"),
+                null_val=self.null_val,
+            )
+            loss = parts["loss"]
+        self._last_budget_f2f_loss_parts = {
+            k: float(v.detach().cpu()) if torch.is_tensor(v) else float(v)
+            for k, v in parts.items()
+            if k != "loss" and (torch.is_tensor(v) or isinstance(v, (int, float)))
+        }
+        self._last_budget_f2f_loss_parts["selected_route"] = str(out.get("selected_route"))
+        self._last_budget_f2f_loss_parts["stage_count"] = float(
+            len(out.get("chain_resolutions") or [])
+        )
+        return loss
+
     def _legacy_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
         preds = out["chain_preds"]
         targets = [ChainForecasting.pool_target(real_value, k) for k in self.chain_lengths]
@@ -566,9 +746,73 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
 
     def init_training(self, cfg: dict):
         super().init_training(cfg)
-        if not self.stagewise_enabled:
-            return
-        self._setup_stagewise_training(cfg)
+        if self.stagewise_enabled:
+            self._setup_stagewise_training(cfg)
+
+        # Budget F2F: optional init checkpoint + joint dual LR
+        param = cfg["MODEL"]["PARAM"] if hasattr(cfg, "__getitem__") else {}
+        init_ckpt = param.get("init_checkpoint") if hasattr(param, "get") else None
+        if init_ckpt and not cfg.get("TRAIN", {}).get("FINETUNE_FROM"):
+            from pathlib import Path
+            import torch
+
+            if Path(init_ckpt).is_file():
+                state = torch.load(init_ckpt, map_location="cpu")
+                if isinstance(state, dict) and "model_state_dict" in state:
+                    state = state["model_state_dict"]
+                elif isinstance(state, dict) and "state_dict" in state:
+                    state = state["state_dict"]
+                missing, unexpected = self.model.load_state_dict(state, strict=False)
+                self.logger.info(
+                    "[budget_f2f] loaded init_checkpoint=%s missing=%s unexpected=%s",
+                    init_ckpt,
+                    len(missing),
+                    len(unexpected),
+                )
+            else:
+                raise FileNotFoundError(f"init_checkpoint not found: {init_ckpt}")
+
+        if (
+            self.budget_training_phase == "joint"
+            and hasattr(self.model, "backbone")
+            and hasattr(self.model, "planner")
+            and hasattr(self, "optim")
+        ):
+            import torch
+
+            train_cfg = cfg.get("TRAIN", {}) if hasattr(cfg, "get") else getattr(cfg, "TRAIN", {})
+            optim_param = (
+                train_cfg.get("OPTIM", {}).get("PARAM", {}) if hasattr(train_cfg, "get") else {}
+            )
+            base_lr = float(optim_param.get("lr", 0.002))
+            backbone_lr = float(param.get("backbone_lr", base_lr * 0.1))
+            planner_lr = float(param.get("planner_lr", base_lr))
+            backbone_params = [p for p in self.model.backbone.parameters() if p.requires_grad]
+            planner_params = [p for p in self.model.planner.parameters() if p.requires_grad]
+            other = [
+                p
+                for n, p in self.model.named_parameters()
+                if p.requires_grad
+                and not n.startswith("backbone.")
+                and not n.startswith("planner.")
+            ]
+            groups = []
+            if backbone_params:
+                groups.append({"params": backbone_params, "lr": backbone_lr})
+            if planner_params:
+                groups.append({"params": planner_params, "lr": planner_lr})
+            if other:
+                groups.append({"params": other, "lr": base_lr})
+            if groups:
+                opt_kwargs = {
+                    k: v for k, v in dict(optim_param).items() if k != "lr"
+                }
+                self.optim = torch.optim.Adam(groups, **opt_kwargs)
+                self.logger.info(
+                    "[budget_f2f joint] rebuilt Adam: backbone_lr=%s planner_lr=%s",
+                    backbone_lr,
+                    planner_lr,
+                )
 
     def _setup_stagewise_training(self, cfg: dict) -> None:
         import os
@@ -712,10 +956,25 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             loss = self._dynamic_resolution_token_loss(out, real_value)
         elif self.chain_loss_mode == "one_shot_resolution_token":
             loss = self._one_shot_resolution_token_loss(out, real_value)
+        elif self.chain_loss_mode == "baseline_compatible":
+            loss = self._baseline_compatible_loss(out, real_value)
+        elif self.chain_loss_mode == "dynamic_fair":
+            loss = self._dynamic_fair_loss(out, real_value)
+            if iter_index == 0 and hasattr(self, "_last_budget_f2f_loss_parts"):
+                parts = self._last_budget_f2f_loss_parts
+                self.logger.info(
+                    "[budget_f2f loss] "
+                    + ", ".join(f"{k}={v}" for k, v in parts.items())
+                )
         elif self.chain_loss_mode in self.TOKEN_LOSS_MODES:
             loss = self._token_mae_loss(out, real_value)
-        else:
+        elif self.chain_loss_mode == "weighted":
             loss = self._legacy_loss(out, real_value)
+        else:
+            raise ValueError(
+                f"Unsupported chain_loss_mode for train: {self.chain_loss_mode}. "
+                f"Expected one of {sorted(self.CHAIN_LOSS_MODES)}."
+            )
 
         pred_final_rescaled = SCALER_REGISTRY.get(self.scaler["func"])(
             forward_return[0], **self.scaler["args"]

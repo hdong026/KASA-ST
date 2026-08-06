@@ -314,6 +314,34 @@ VARIANT_SPECS: dict[str, dict] = {
         "budget_dual_lr": 0.01,
         "hierarchy_cache_dir": "generated/cache/adaptive_resolution_hierarchies",
     },
+    # Budget-conditioned adaptive F2F (reuses KASA stages; route pool)
+    "chain_budget_conditioned_adaptive_f2f_kasa_condition_adapter_token_loss": {
+        "is_chain": False,
+        "model_name": "BudgetConditionedAdaptiveF2FNet",
+        "model_arch": "BudgetConditionedAdaptiveF2FNet",
+        "chain_loss_mode": "dynamic_fair",
+        "chain_loss_weights": None,
+        "inference_intensity": 0.5,
+        "route_selection_mode": "batch",
+        "route_granularity": "batch",
+        "route_cost_type": "normalized_static_cost",
+        "planner_hidden_dim": 64,
+        "training_phase": "supernet",
+        "route_sampling": "sandwich",
+        "loss_mode": "dynamic_fair",
+        "freeze_forecasting_backbone": False,
+        "use_prev_condition": True,
+        "spatial_placement": "interleaved_progressive",
+        "progressive_spatial_ratios": [0.25, 0.5, 1.0],
+        "progressive_spatial_topks": [8, 16, 32],
+        "progressive_spatial_alphas": [0.03, 0.06, 0.10],
+        "post_spatial_mode": "adaptive_only",
+        "use_adaptive_adj": True,
+        "use_forecast_state_adapter": True,
+        "forecast_state_adapter_mode": "condition_only",
+        "forecast_state_adapter_hidden_dim": 16,
+        "forecast_state_adapter_epsilon": 0.02,
+    },
     # Adaptive-resolution gates on forwarded condition only (pilot; F2FNet backbone unchanged)
     "chain_interleaved_adaptive_resolution_gate_state_adapter_fixed_token_loss": {
         "is_chain": True,
@@ -549,6 +577,17 @@ def generate_temp_config(horizon: int, variant: str, seed: int) -> Path:
             "controller_hidden_dim",
         ):
             lines.append(f'CFG.MODEL.PARAM.pop("{_k}", None)')
+    if model_arch == "BudgetConditionedAdaptiveF2FNet":
+        lines.append("from basicts.archs import BudgetConditionedAdaptiveF2FNet")
+        lines.append("CFG.MODEL.ARCH = BudgetConditionedAdaptiveF2FNet")
+        # Supernet builds chain_lengths from candidate routes internally.
+        lines.append('CFG.MODEL.PARAM.pop("chain_lengths", None)')
+        # Prefer easytorch FINETUNE_FROM when init_checkpoint is set.
+        if spec.get("init_checkpoint"):
+            lines.append(
+                f'CFG.TRAIN.FINETUNE_FROM = {_py_literal(spec["init_checkpoint"])}'
+            )
+            lines.append("CFG.TRAIN.FINETUNE_STRICT_LOAD = False")
     for key, val in spec.items():
         if key in _META_SPEC_KEYS:
             continue
@@ -1077,7 +1116,11 @@ def main() -> int:
             if cfg.DATASET_OUTPUT_LEN != horizon or cfg.MODEL.PARAM["output_len"] != horizon:
                 print(f"    ERROR: output_len mismatch for h={horizon}")
             expected_chain = chain_lengths_for(horizon)
-            if variant != "kasa_baseline":
+            if variant != "kasa_baseline" and spec.get("model_arch") not in {
+                "AdaptiveResolutionPonderingF2FNet",
+                "OneShotAdaptiveResolutionF2FNet",
+                "BudgetConditionedAdaptiveF2FNet",
+            }:
                 if cfg.MODEL.PARAM.get("chain_lengths") != expected_chain:
                     print(f"    ERROR: chain_lengths {cfg.MODEL.PARAM.get('chain_lengths')} != {expected_chain}")
         print(f"\n{len(jobs)} jobs (expected {expected_jobs}), unique ckpt dirs: {len(ckpt_dirs)}")
