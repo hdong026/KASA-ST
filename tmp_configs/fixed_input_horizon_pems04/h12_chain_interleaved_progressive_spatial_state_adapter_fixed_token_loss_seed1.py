@@ -142,6 +142,7 @@ CFG.TRAIN.DATA.DIR = "datasets/PEMS04"
 CFG.VAL.DATA.DIR = "datasets/PEMS04"
 CFG.TEST.DATA.DIR = "datasets/PEMS04"
 CFG.MODEL.PARAM["adj_mx_path"] = "datasets/PEMS04/adj_mx.pkl"
+CFG.MODEL.PARAM["dataset_name"] = "PEMS04"
 CFG.DATASET_INPUT_LEN = 12
 CFG.DATASET_OUTPUT_LEN = 12
 CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("checkpoints/fixed_input_horizon_pems04/h12/chain_interleaved_progressive_spatial_state_adapter_fixed_token_loss_seed1")

@@ -11,6 +11,9 @@ from basicts.archs.arch_zoo.ChainForecasting_arch.kasa_temporal_step import (
     interpolate_forecast,
     interpolate_latent,
 )
+from basicts.archs.arch_zoo.ChainForecasting_arch.adaptive_resolution_controller import (
+    AdaptiveResolutionController,
+)
 from basicts.archs.arch_zoo.ChainForecasting_arch.forecast_state_adapter import (
     ForecastStateAdapter,
 )
@@ -80,6 +83,29 @@ class ChainForecasting(nn.Module):
                 f"{self.forecast_state_adapter_mode}. "
                 "Expected 'state_replace' or 'condition_only'."
             )
+        self.use_adaptive_resolution_controller = bool(
+            model_args.get("use_adaptive_resolution_controller", False)
+        )
+        self.adaptive_resolution_hidden_dim = int(
+            model_args.get("adaptive_resolution_hidden_dim", 16)
+        )
+        self.adaptive_resolution_gate_init = float(
+            model_args.get("adaptive_resolution_gate_init", 0.98)
+        )
+        self.adaptive_resolution_temporal_kernel = int(
+            model_args.get("adaptive_resolution_temporal_kernel", 3)
+        )
+        self.adaptive_resolution_apply_to = str(
+            model_args.get("adaptive_resolution_apply_to", "forwarded_condition")
+        ).lower()
+        if self.adaptive_resolution_apply_to not in {"forwarded_condition"}:
+            raise ValueError(
+                f"Unsupported adaptive_resolution_apply_to: "
+                f"{self.adaptive_resolution_apply_to}. "
+                "Expected 'forwarded_condition'."
+            )
+        self.adaptive_resolution_controller: AdaptiveResolutionController | None = None
+        self._last_adaptive_resolution_diagnostics: dict | None = None
         if self.use_spectral_stage_router and self.use_light_spectral_router:
             raise ValueError(
                 "use_spectral_stage_router and use_light_spectral_router are mutually exclusive."
@@ -329,7 +355,10 @@ class ChainForecasting(nn.Module):
                 alpha_key="post_chain_spatial_alphas",
                 topk_key="post_chain_spatial_topks",
             )
-        elif self.spatial_placement == "temporal_first_graph_resolution":
+        elif self.spatial_placement in {
+            "temporal_first_graph_resolution",
+            "interleaved_graph_resolution",
+        }:
             from basicts.archs.arch_zoo.ChainForecasting_arch.graph_resolution_spatial import (
                 GraphResolutionSpatialStack,
             )
@@ -390,6 +419,10 @@ class ChainForecasting(nn.Module):
                 adaptive_ms_share_logits=model_args.get("adaptive_ms_share_logits", True),
                 adaptive_ms_init=model_args.get("adaptive_ms_init", "favor_largest"),
             )
+            if self.spatial_placement == "interleaved_graph_resolution":
+                self._log_interleaved_graph_resolution_startup(
+                    model_args.get("variant_name", "")
+                )
         elif self.spatial_placement == "temporal_first_capdist_refine":
             from basicts.archs.arch_zoo.ChainForecasting_arch.capdist_refine_spatial import (
                 CapDistRefineSpatialStack,
@@ -440,6 +473,25 @@ class ChainForecasting(nn.Module):
                     "sample_scale" if is_condition_only else "transition_delta"
                 ),
                 delta_feature="normalized" if is_condition_only else "raw",
+            )
+
+        # Adaptive-resolution gates: condition-only pilot (shared across stages).
+        if self.use_adaptive_resolution_controller:
+            if self.spatial_placement != "interleaved_progressive":
+                raise ValueError(
+                    "use_adaptive_resolution_controller currently requires "
+                    "spatial_placement='interleaved_progressive'."
+                )
+            if self.progressive_spatial_modules is None or len(
+                self.progressive_spatial_modules
+            ) == 0:
+                raise ValueError(
+                    "adaptive resolution controller requires progressive_spatial_modules."
+                )
+            self.adaptive_resolution_controller = AdaptiveResolutionController(
+                hidden_dim=self.adaptive_resolution_hidden_dim,
+                gate_init=self.adaptive_resolution_gate_init,
+                temporal_kernel=self.adaptive_resolution_temporal_kernel,
             )
 
     @staticmethod
@@ -541,6 +593,7 @@ class ChainForecasting(nn.Module):
             "each_level",
             "none",
             "interleaved_progressive",
+            "interleaved_graph_resolution",
             "temporal_first_multiscale",
             "temporal_first_graph_resolution",
             "temporal_first_capdist_refine",
@@ -548,8 +601,8 @@ class ChainForecasting(nn.Module):
             raise ValueError(
                 f"Unsupported spatial_placement: {placement}. "
                 "Expected 'final', 'each_level', 'none', 'interleaved_progressive', "
-                "'temporal_first_multiscale', 'temporal_first_graph_resolution', "
-                "or 'temporal_first_capdist_refine'."
+                "'interleaved_graph_resolution', 'temporal_first_multiscale', "
+                "'temporal_first_graph_resolution', or 'temporal_first_capdist_refine'."
             )
         return placement
 
@@ -558,6 +611,7 @@ class ChainForecasting(nn.Module):
         mapping = {
             "none": "none",
             "interleaved_progressive": "interleaved",
+            "interleaved_graph_resolution": "interleaved_graph_resolution",
             "final": "final_only",
             "each_level": "each_level",
             "temporal_first_multiscale": "temporal_first_multiscale",
@@ -567,7 +621,11 @@ class ChainForecasting(nn.Module):
         return mapping.get(spatial_placement, spatial_placement)
 
     def _uses_interleaved_spatial(self) -> bool:
-        return self.spatial_placement in {"interleaved_progressive", "each_level"}
+        return self.spatial_placement in {
+            "interleaved_progressive",
+            "interleaved_graph_resolution",
+            "each_level",
+        }
 
     def _propagate_temporal_only(self) -> bool:
         return self.spatial_placement in {
@@ -608,6 +666,82 @@ class ChainForecasting(nn.Module):
         history_flow = history_data[..., 0]
         module = self.progressive_spatial_modules[stage_idx]
         return module.refine_prediction(forecast, history_flow)
+
+    def _log_interleaved_graph_resolution_startup(self, variant_name: str = "") -> None:
+        stack = self.graph_resolution_stack
+        assert stack is not None
+        meta = stack.metadata()
+        print(
+            "[InterleavedGraphResolution] "
+            f"variant={variant_name or 'interleaved_graph_resolution'} "
+            f"method={meta.get('graph_cluster_method')} "
+            f"clustering_seed={meta.get('clustering_seed')} "
+            f"chain_lengths={list(self.chain_lengths)} "
+            f"capacities={meta.get('graph_resolution_capacities')} "
+            f"cluster_counts={meta.get('graph_resolution_sizes')} "
+            f"max_cluster_sizes={meta.get('max_cluster_sizes')} "
+            f"singleton_ratios={meta.get('singleton_ratios')} "
+            f"nested_consistency={meta.get('nested_consistency')} "
+            f"topks={meta.get('graph_resolution_topks')} "
+            f"effective_topks={meta.get('graph_resolution_effective_topks')} "
+            f"alphas={meta.get('graph_resolution_alphas')} "
+            f"betas={meta.get('graph_resolution_betas')} "
+            f"cache={meta.get('multilevel_cache_path')}"
+        )
+
+    def _apply_graph_resolution_stage_refine(
+        self,
+        forecast: torch.Tensor,
+        history_data: torch.Tensor,
+        stage_idx: int,
+    ) -> torch.Tensor:
+        assert self.graph_resolution_stack is not None
+        history_flow = history_data[..., 0]
+        out = self.graph_resolution_stack.refine_single_stage(
+            forecast,
+            history_flow,
+            stage_idx,
+            return_diagnostics=True,
+        )
+        assert isinstance(out, dict)
+        if not hasattr(self, "_gr_interleaved_logged"):
+            self._gr_interleaved_logged = set()
+        if stage_idx not in self._gr_interleaved_logged:
+            print(
+                f"[InterleavedGraphResolution] stage={stage_idx} "
+                f"temporal_shape={tuple(forecast.shape)} "
+                f"cluster_shape={tuple(out['u_cluster'].shape)} "
+                f"lifted_residual_shape={tuple(out['r_node'].shape)} "
+                f"final_stage_shape={tuple(out['pred'].shape)} "
+                f"num_clusters={out['num_clusters']} "
+                f"effective_topk={out['effective_topk']}"
+            )
+            self._gr_interleaved_logged.add(stage_idx)
+        # Keep separate from temporal-first graph_resolution_diagnostics: those
+        # node_stage_preds are assumed full-horizon and are used by val MAE.
+        if getattr(self, "_last_interleaved_gr_diagnostics", None) is None:
+            self._last_interleaved_gr_diagnostics = {
+                "node_stage_preds": [],
+                "cluster_residuals": [],
+                "lifted_residuals": [],
+                "graph_projection_matrices": [],
+                "per_stage": [],
+            }
+        self._last_interleaved_gr_diagnostics["node_stage_preds"].append(out["pred"])
+        self._last_interleaved_gr_diagnostics["cluster_residuals"].append(out["r_cluster"])
+        self._last_interleaved_gr_diagnostics["lifted_residuals"].append(out["r_node"])
+        self._last_interleaved_gr_diagnostics["graph_projection_matrices"].append(
+            getattr(self.graph_resolution_stack, f"stage{stage_idx}_P")
+        )
+        self._last_interleaved_gr_diagnostics["per_stage"].append(
+            {
+                "stage_idx": stage_idx,
+                "num_clusters": out["num_clusters"],
+                "effective_topk": out["effective_topk"],
+                "beta": out["beta"],
+            }
+        )
+        return out["pred"]
 
     def _apply_post_chain_spatial_stages(
         self,
@@ -809,11 +943,15 @@ class ChainForecasting(nn.Module):
         self, history_data: torch.Tensor
     ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
         self._last_graph_diagnostics = None
+        self._last_interleaved_gr_diagnostics = None
+        self._last_adaptive_resolution_diagnostics = None
+        # Keep first-forward-per-stage logging across calls; only reset diagnostics.
         spatial_codebook = self._spatial_codebook()
         chain_preds: list[torch.Tensor] = []
         temporal_preds: list[torch.Tensor] = []
         spatial_preds: list[torch.Tensor] = []
         spatial_stage_preds: list[torch.Tensor] = []
+        adaptive_resolution_diags: list[dict] = []
         prev_forecast = None
         prev_latent = None
 
@@ -858,6 +996,10 @@ class ChainForecasting(nn.Module):
 
             if self.spatial_placement == "interleaved_progressive":
                 z_raw = self._apply_progressive_spatial_refine(t_k, history_data, step_idx)
+            elif self.spatial_placement == "interleaved_graph_resolution":
+                z_raw = self._apply_graph_resolution_stage_refine(
+                    t_k, history_data, step_idx
+                )
             elif self.spatial_placement == "each_level":
                 z_raw = self._apply_spatial_refine(t_k, history_data)
             else:
@@ -885,6 +1027,28 @@ class ChainForecasting(nn.Module):
                         stage_ratio=stage_ratio,
                     )
                     next_prev = supervised_state
+
+            # Adaptive-resolution gates: only rewrite forwarded condition on
+            # non-final stages. Supervised forecasts / chain_preds stay raw.
+            if (
+                self.adaptive_resolution_controller is not None
+                and self.adaptive_resolution_apply_to == "forwarded_condition"
+                and step_idx < len(self.temporal_steps) - 1
+                and self.progressive_spatial_modules is not None
+                and len(self.progressive_spatial_modules) > step_idx
+            ):
+                spatial_module = self.progressive_spatial_modules[step_idx]
+                adaptive_adj = spatial_module._build_adaptive_adj()
+                next_prev, gate_diag = self.adaptive_resolution_controller(
+                    condition=next_prev,
+                    supervised_forecast=supervised_state,
+                    previous_condition=previous_state,
+                    stage_ratio=stage_ratio,
+                    adaptive_adj=adaptive_adj,
+                    stage_idx=step_idx,
+                    return_diagnostics=True,
+                )
+                adaptive_resolution_diags.append(gate_diag)
 
             temporal_preds.append(t_k)
             spatial_preds.append(supervised_state)
@@ -936,7 +1100,45 @@ class ChainForecasting(nn.Module):
         if self.chain_supervision_source == "temporal_chain":
             chain_preds[-1] = y_temporal_final
 
+        if adaptive_resolution_diags:
+            self._last_adaptive_resolution_diagnostics = (
+                self._summarize_adaptive_resolution_diagnostics(adaptive_resolution_diags)
+            )
+
         return y_final, chain_preds, temporal_preds, spatial_preds, spatial_stage_preds
+
+    @staticmethod
+    def _summarize_adaptive_resolution_diagnostics(
+        diags: list[dict],
+    ) -> dict:
+        temporal_gates = [d["temporal_detail_gate"] for d in diags]
+        spatial_gates = [d["spatial_detail_gate"] for d in diags]
+
+        def _stats(gate: torch.Tensor) -> dict[str, float]:
+            flat = gate.detach().float().flatten()
+            return {
+                "mean": float(flat.mean().item()),
+                "std": float(flat.std(unbiased=False).item()),
+                "min": float(flat.min().item()),
+                "max": float(flat.max().item()),
+            }
+
+        temporal_stats = [_stats(g) for g in temporal_gates]
+        spatial_stats = [_stats(g) for g in spatial_gates]
+        return {
+            "temporal_detail_gates": temporal_gates,
+            "spatial_detail_gates": spatial_gates,
+            "temporal_gate_mean_by_stage": [s["mean"] for s in temporal_stats],
+            "spatial_gate_mean_by_stage": [s["mean"] for s in spatial_stats],
+            "temporal_gate_std_by_stage": [s["std"] for s in temporal_stats],
+            "spatial_gate_std_by_stage": [s["std"] for s in spatial_stats],
+            "temporal_gate_min_by_stage": [s["min"] for s in temporal_stats],
+            "temporal_gate_max_by_stage": [s["max"] for s in temporal_stats],
+            "spatial_gate_min_by_stage": [s["min"] for s in spatial_stats],
+            "spatial_gate_max_by_stage": [s["max"] for s in spatial_stats],
+            "stage_indices": [int(d["stage_idx"]) for d in diags],
+            "stage_ratios": [float(d["stage_ratio"]) for d in diags],
+        }
 
     def _forward_direct_matched(
         self, history_data: torch.Tensor
@@ -1080,6 +1282,40 @@ class ChainForecasting(nn.Module):
                     result["graph_resolution_metadata"] = self.graph_resolution_stack.metadata()
                 if self.capdist_refine_stack is not None:
                     result["graph_resolution_metadata"] = self.capdist_refine_stack.metadata()
+            if self.graph_resolution_stack is not None:
+                meta = self.graph_resolution_stack.metadata()
+                result["graph_resolution_sizes"] = meta.get("graph_resolution_sizes")
+                result["graph_resolution_capacities"] = meta.get(
+                    "graph_resolution_capacities"
+                )
+                result["graph_resolution_topks"] = meta.get("graph_resolution_topks")
+                result["graph_resolution_alphas"] = meta.get("graph_resolution_alphas")
+                result["graph_resolution_betas"] = meta.get("graph_resolution_betas")
+                result["clustering_method"] = meta.get("graph_cluster_method")
+                result["nested_consistency"] = meta.get("nested_consistency")
+                result["cluster_cache_path"] = meta.get("multilevel_cache_path")
+                result["graph_resolution_metadata"] = meta
+            if getattr(self, "_last_interleaved_gr_diagnostics", None) is not None:
+                result["interleaved_graph_resolution_diagnostics"] = (
+                    self._last_interleaved_gr_diagnostics
+                )
+            if getattr(self, "_last_adaptive_resolution_diagnostics", None) is not None:
+                diag = self._last_adaptive_resolution_diagnostics
+                result["adaptive_resolution_diagnostics"] = diag
+                result["temporal_detail_gates"] = diag.get("temporal_detail_gates")
+                result["spatial_detail_gates"] = diag.get("spatial_detail_gates")
+                result["temporal_gate_mean_by_stage"] = diag.get(
+                    "temporal_gate_mean_by_stage"
+                )
+                result["spatial_gate_mean_by_stage"] = diag.get(
+                    "spatial_gate_mean_by_stage"
+                )
+                result["temporal_gate_std_by_stage"] = diag.get(
+                    "temporal_gate_std_by_stage"
+                )
+                result["spatial_gate_std_by_stage"] = diag.get(
+                    "spatial_gate_std_by_stage"
+                )
             result.update(self._collect_adaptive_ms_diagnostics())
             return result
         return y_final

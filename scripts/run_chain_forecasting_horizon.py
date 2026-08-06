@@ -273,6 +273,76 @@ VARIANT_SPECS: dict[str, dict] = {
         "forecast_state_adapter_hidden_dim": 16,
         "forecast_state_adapter_epsilon": 0.02,
     },
+    # Dynamic T/S pondering F2FNet (no fixed chain lengths / capacities)
+    "chain_adaptive_resolution_pondering_condition_adapter_token_loss": {
+        "is_chain": False,
+        "model_name": "AdaptiveResolutionPonderingF2FNet",
+        "model_arch": "AdaptiveResolutionPonderingF2FNet",
+        "chain_loss_mode": "dynamic_resolution_token",
+        "chain_loss_weights": None,
+        "thinking_intensity": 0.5,
+        "controller_hidden_dim": 32,
+        "forecast_cell_hidden_dim": 32,
+        "controller_temperature": 1.0,
+        "controller_temperature_decay": 0.97,
+        "halt_threshold": 0.5,
+        "split_threshold": 0.5,
+        "forecast_state_adapter_hidden_dim": 16,
+        "forecast_state_adapter_epsilon": 0.02,
+        "clustering_seed": 0,
+        "budget_base": 0.35,
+        "budget_scale": 0.55,
+        "budget_dual_lr": 0.01,
+        "hierarchy_cache_dir": "generated/cache/adaptive_resolution_hierarchies",
+    },
+    # Adaptive-resolution gates on forwarded condition only (pilot; F2FNet backbone unchanged)
+    "chain_interleaved_adaptive_resolution_gate_state_adapter_fixed_token_loss": {
+        "is_chain": True,
+        "model_name": "ChainForecasting_AdaptiveResolutionGate_TokenMAE",
+        "chain_lengths": None,
+        "chain_loss_weights": None,
+        "chain_loss_mode": "token_normalized",
+        "use_prev_condition": True,
+        "spatial_placement": "interleaved_progressive",
+        "progressive_spatial_ratios": [0.25, 0.5, 1.0],
+        "progressive_spatial_topks": [8, 16, 32],
+        "progressive_spatial_alphas": [0.03, 0.06, 0.10],
+        "post_spatial_mode": "adaptive_only",
+        "use_adaptive_adj": True,
+        "use_forecast_state_adapter": True,
+        "forecast_state_adapter_mode": "condition_only",
+        "forecast_state_adapter_hidden_dim": 16,
+        "forecast_state_adapter_epsilon": 0.02,
+        "use_adaptive_resolution_controller": True,
+        "adaptive_resolution_hidden_dim": 16,
+        "adaptive_resolution_gate_init": 0.98,
+        "adaptive_resolution_temporal_kernel": 3,
+        "adaptive_resolution_apply_to": "forwarded_condition",
+    },
+    # Nested node hierarchy vs fixed-node progressive spatial (control experiment)
+    "chain_interleaved_nested_graph_resolution_state_adapter_fixed_token_loss": {
+        "is_chain": True,
+        "model_name": "ChainForecasting_NestedGraphResolution_TokenMAE",
+        "chain_lengths": None,
+        "chain_loss_weights": None,
+        "chain_loss_mode": "token_normalized",
+        "use_prev_condition": True,
+        "spatial_placement": "interleaved_graph_resolution",
+        "graph_cluster_method": "gr20_graclus_matching_4_2_1",
+        "graph_resolution_capacities": [4, 2, 1],
+        "graph_resolution_rhos": [0.25, 0.5, 1.0],
+        "graph_resolution_topks": [8, 16, 32],
+        "graph_resolution_alphas": [0.03, 0.06, 0.10],
+        "graph_resolution_betas": [1.0, 1.0, 1.0],
+        "post_spatial_mode": "adaptive_only",
+        "use_adaptive_adj": True,
+        "clustering_seed": 0,
+        "use_forecast_state_adapter": True,
+        "forecast_state_adapter_mode": "condition_only",
+        "forecast_state_adapter_hidden_dim": 16,
+        "forecast_state_adapter_epsilon": 0.02,
+        "variant_name": "nested_graph_resolution_fixed_token_loss",
+    },
     # Spatial sensitivity: Light (same final adapter/token-loss; weaker progressive spatial)
     "chain_interleaved_progressive_spatial_state_adapter_fixed_token_loss_light": {
         "is_chain": True,
@@ -396,7 +466,7 @@ def _py_literal(v) -> str:
     return str(v)
 
 
-_META_SPEC_KEYS = {"is_chain", "model_name"}
+_META_SPEC_KEYS = {"is_chain", "model_name", "model_arch"}
 
 
 def generate_temp_config(horizon: int, variant: str, seed: int) -> Path:
@@ -417,6 +487,7 @@ def generate_temp_config(horizon: int, variant: str, seed: int) -> Path:
         f'CFG.VAL.DATA.DIR = "datasets/{DATASET_NAME}"',
         f'CFG.TEST.DATA.DIR = "datasets/{DATASET_NAME}"',
         f'CFG.MODEL.PARAM["adj_mx_path"] = "datasets/{DATASET_NAME}/adj_mx.pkl"',
+        f'CFG.MODEL.PARAM["dataset_name"] = "{DATASET_NAME}"',
         f"CFG.DATASET_INPUT_LEN = {INPUT_LEN}",
         f"CFG.DATASET_OUTPUT_LEN = {horizon}",
         f'CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("{ckpt_rel}")',
@@ -429,6 +500,21 @@ def generate_temp_config(horizon: int, variant: str, seed: int) -> Path:
     model_name = spec.get("model_name")
     if model_name:
         lines.append(f"CFG.MODEL.NAME = {_py_literal(model_name)}")
+    model_arch = spec.get("model_arch")
+    if model_arch == "AdaptiveResolutionPonderingF2FNet":
+        lines.append("from basicts.archs import AdaptiveResolutionPonderingF2FNet")
+        lines.append("CFG.MODEL.ARCH = AdaptiveResolutionPonderingF2FNet")
+        # Pondering model must not inherit fixed chain schedules / capacities.
+        for _k in (
+            "chain_lengths",
+            "temporal_resolution_candidates",
+            "spatial_resolution_candidates",
+            "graph_resolution_capacities",
+            "progressive_spatial_ratios",
+            "progressive_spatial_topks",
+            "progressive_spatial_alphas",
+        ):
+            lines.append(f'CFG.MODEL.PARAM.pop("{_k}", None)')
     for key, val in spec.items():
         if key in _META_SPEC_KEYS:
             continue
@@ -672,6 +758,39 @@ def run_one(horizon: int, variant: str, cfg_path: Path, gpu: str, seed: int) -> 
         else:
             row["status"] = "ok"
             row["failed"] = 0
+            # Optional gate diagnostics for adaptive-resolution pilot.
+            spec = variant_spec(variant, horizon)
+            if spec.get("use_adaptive_resolution_controller"):
+                try:
+                    diag_out = LOG_DIR / (
+                        f"h{horizon}_{variant}_seed{seed}_adaptive_resolution_gates.json"
+                    )
+                    diag_cmd = [
+                        sys.executable,
+                        str(ROOT / "scripts" / "collect_adaptive_resolution_gate_diagnostics.py"),
+                        "--cfg",
+                        str(cfg_path),
+                        "--split",
+                        "test",
+                        "--max_batches",
+                        "20",
+                        "--device",
+                        "cuda:0",
+                        "--out",
+                        str(diag_out),
+                    ]
+                    subprocess.run(
+                        diag_cmd,
+                        cwd=str(ROOT),
+                        env=env,
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    if diag_out.is_file():
+                        row["adaptive_resolution_gate_diag"] = str(diag_out)
+                except Exception:
+                    pass
     except Exception as e:
         row["status"] = f"error:{e}"
         row["failed"] = 1

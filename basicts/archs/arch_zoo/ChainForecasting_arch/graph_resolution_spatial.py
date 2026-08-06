@@ -286,6 +286,7 @@ class GraphResolutionSpatialStack(nn.Module):
         self.cluster_meta: list[dict[str, Any]] = []
         self.cluster_cache_paths: list[str] = []
         self.spatial_modules = nn.ModuleList()
+        self.graph_resolution_effective_topks: list[int] = []
 
         for stage_idx, m_j in enumerate(self.graph_resolution_sizes):
             ratio = float(self.graph_resolution_rhos[stage_idx])
@@ -380,6 +381,7 @@ class GraphResolutionSpatialStack(nn.Module):
 
             adp_dim = max(8, int(adp_hidden_dim * ratio))
             adp_k = min(topk, max(1, m_j - 1))
+            self.graph_resolution_effective_topks.append(int(adp_k))
             ms_kwargs = {
                 k: kwargs[k]
                 for k in (
@@ -494,6 +496,63 @@ class GraphResolutionSpatialStack(nn.Module):
 
     def _project_history(self, history_flow: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
         return torch.einsum("mn,bln->blm", p, history_flow)
+
+    def refine_single_stage(
+        self,
+        forecast: torch.Tensor,
+        history_flow: torch.Tensor,
+        stage_idx: int,
+        return_diagnostics: bool = False,
+    ) -> torch.Tensor | dict[str, Any]:
+        """Apply one graph-resolution spatial residual and lift back to N nodes.
+
+        Args:
+            forecast: `[B, h_s, N, C]` node-space temporal forecast.
+            history_flow: `[B, P, N]` history channel-0 flow.
+            stage_idx: graph-resolution stage index (0/1/2).
+        Returns:
+            Refined forecast `[B, h_s, N, C]`, or diagnostics dict when requested.
+        """
+        if stage_idx < 0 or stage_idx >= len(self.spatial_modules):
+            raise ValueError(
+                f"stage_idx={stage_idx} out of range for "
+                f"{len(self.spatial_modules)} graph-resolution stages."
+            )
+        u_node = forecast
+        m_j = int(self.graph_resolution_sizes[stage_idx])
+        beta = float(self.graph_resolution_betas[stage_idx])
+        c = getattr(self, f"stage{stage_idx}_C")
+        p = getattr(self, f"stage{stage_idx}_P")
+        module = self.spatial_modules[stage_idx]
+
+        if m_j < self.node_size:
+            u_cluster = self._project_nodes(u_node, p)
+            hist_cluster = self._project_history(history_flow, p)
+        else:
+            u_cluster = u_node
+            hist_cluster = history_flow
+
+        u_refined = module.refine_prediction(u_cluster, hist_cluster)
+        r_cluster = u_refined - u_cluster
+
+        if m_j < self.node_size:
+            r_node = self._lift_clusters(r_cluster, c)
+        else:
+            r_node = r_cluster
+
+        output = u_node + beta * r_node
+        if not return_diagnostics:
+            return output
+        return {
+            "pred": output,
+            "u_cluster": u_cluster,
+            "r_cluster": r_cluster,
+            "r_node": r_node,
+            "num_clusters": m_j,
+            "stage_idx": stage_idx,
+            "beta": beta,
+            "effective_topk": int(self.graph_resolution_effective_topks[stage_idx]),
+        }
 
     def forward_stagewise(
         self,
@@ -653,6 +712,26 @@ class GraphResolutionSpatialStack(nn.Module):
         return out
 
     def metadata(self) -> dict[str, Any]:
+        nested = None
+        max_sizes: list[int | None] = []
+        singleton_ratios: list[float | None] = []
+        for idx, meta in enumerate(self.cluster_meta):
+            if nested is None and meta.get("nested_consistency") is not None:
+                nested = bool(meta.get("nested_consistency"))
+            val = meta.get("validation") or {}
+            max_size = val.get("max_cluster_size")
+            # Identity / full-resolution level: each cluster is a singleton node.
+            if max_size is None and int(self.graph_resolution_sizes[idx]) == int(self.node_size):
+                max_size = 1
+            max_sizes.append(max_size)
+            labels = np.asarray(meta.get("labels", []))
+            if labels.size:
+                sizes = np.bincount(labels.astype(np.int64))
+                singleton_ratios.append(float((sizes == 1).sum() / max(len(sizes), 1)))
+            elif int(self.graph_resolution_sizes[idx]) == int(self.node_size):
+                singleton_ratios.append(1.0)
+            else:
+                singleton_ratios.append(None)
         return {
             "graph_resolution_ratios": self.graph_resolution_ratios,
             "graph_resolution_capacities": self.graph_resolution_capacities,
@@ -662,6 +741,7 @@ class GraphResolutionSpatialStack(nn.Module):
             "spatial_operator_type": self.post_spatial_mode,
             "graph_resolution_alphas": self.graph_resolution_alphas,
             "graph_resolution_topks": self.graph_resolution_topks,
+            "graph_resolution_effective_topks": list(self.graph_resolution_effective_topks),
             "graph_resolution_betas": self.graph_resolution_betas,
             "graph_cluster_method": self.graph_cluster_method,
             "graph_cluster_affinity": self.graph_cluster_affinity,
@@ -671,4 +751,8 @@ class GraphResolutionSpatialStack(nn.Module):
             "cluster_graph_mix_lambdas": list(self.cluster_graph_mix_lambdas or []),
             "s1_stage_disabled": self.s1_stage_disabled,
             "multilevel_cache_path": getattr(self, "_multilevel_cache_path", ""),
+            "nested_consistency": nested,
+            "max_cluster_sizes": max_sizes,
+            "singleton_ratios": singleton_ratios,
+            "clustering_seed": self.clustering_seed,
         }

@@ -131,12 +131,18 @@ CFG.TEST.DATA.SHUFFLE = False
 CFG.TEST.DATA.NUM_WORKERS = 2
 CFG.TEST.DATA.PIN_MEMORY = False
 
-# ===== fixed_input_horizon_pems04 overrides (auto-generated) =====
+# ===== fixed_input_horizon overrides (auto-generated) =====
 CFG.ENV.SEED = 2
 if hasattr(CFG, 'SEED'):
     CFG.SEED = 2
 if hasattr(CFG, 'TRAIN') and hasattr(CFG.TRAIN, 'SEED'):
     CFG.TRAIN.SEED = 2
+CFG.DATASET_NAME = "PEMS04"
+CFG.TRAIN.DATA.DIR = "datasets/PEMS04"
+CFG.VAL.DATA.DIR = "datasets/PEMS04"
+CFG.TEST.DATA.DIR = "datasets/PEMS04"
+CFG.MODEL.PARAM["adj_mx_path"] = "datasets/PEMS04/adj_mx.pkl"
+CFG.MODEL.PARAM["dataset_name"] = "PEMS04"
 CFG.DATASET_INPUT_LEN = 12
 CFG.DATASET_OUTPUT_LEN = 12
 CFG.TRAIN.CKPT_SAVE_DIR = os.path.join("checkpoints/fixed_input_horizon_pems04/h12/chain_interleaved_progressive_spatial_state_adapter_fixed_token_loss_seed2")

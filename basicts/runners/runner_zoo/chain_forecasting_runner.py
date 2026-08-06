@@ -7,6 +7,9 @@ from easytorch.utils.dist import master_only
 
 from basicts.archs.arch_zoo.ChainForecasting_arch import ChainForecasting
 from basicts.losses.forecast_state_token_mae import forecast_state_token_mae
+from basicts.archs.arch_zoo.ChainForecasting_arch.adaptive_resolution_loss import (
+    dynamic_resolution_total_loss,
+)
 from basicts.runners.base_tsf_runner import SCALER_REGISTRY
 from basicts.runners.stagewise_training import (
     STAGE_LOSS_NAMES,
@@ -26,13 +29,19 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         "unified_residual_detach",
         "unified_mono",
     }
-    CHAIN_LOSS_MODES = {"weighted", "token_mae", "token_normalized"}
+    CHAIN_LOSS_MODES = {
+        "weighted",
+        "token_mae",
+        "token_normalized",
+        "dynamic_resolution_token",
+    }
     TOKEN_LOSS_MODES = {"token_mae", "token_normalized"}
 
     def __init__(self, cfg: dict):
         super().__init__(cfg)
         param = cfg["MODEL"]["PARAM"]
-        self.chain_lengths = list(param.get("chain_lengths", [3, 6, 12]))
+        raw_lengths = param.get("chain_lengths", [3, 6, 12])
+        self.chain_lengths = list(raw_lengths) if raw_lengths is not None else []
         self.chain_loss_mode = str(param.get("chain_loss_mode", "weighted")).lower()
         if self.chain_loss_mode not in self.CHAIN_LOSS_MODES:
             raise ValueError(
@@ -40,7 +49,9 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
                 f"Expected one of {sorted(self.CHAIN_LOSS_MODES)}."
             )
         raw_weights = param.get("chain_loss_weights", [0.2, 0.3, 1.0])
-        if self.chain_loss_mode in self.TOKEN_LOSS_MODES:
+        if self.chain_loss_mode in self.TOKEN_LOSS_MODES or self.chain_loss_mode == (
+            "dynamic_resolution_token"
+        ):
             # Artificial stage weights are unused; allow None / omit.
             self.chain_loss_weights = list(raw_weights) if raw_weights is not None else []
         else:
@@ -385,6 +396,30 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             rescale_pair=self._rescale_pair,
         )
 
+    def _dynamic_resolution_token_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
+        """Matched + halt-weighted full loss for AdaptiveResolutionPonderingF2FNet."""
+        if "dynamic_loss" in out and out["dynamic_loss"] is not None:
+            loss = out["dynamic_loss"]
+        else:
+            y = real_value[..., : out["pred"].shape[-1]]
+            parts = dynamic_resolution_total_loss(
+                matched_preds=list(out["matched_preds"]),
+                matched_targets=list(out["matched_targets"]),
+                matched_masks=list(out["matched_masks"]),
+                full_candidates=list(out["full_candidates"]),
+                halt_weights=out["halt_weights"],
+                full_target=y,
+                expected_cost=out["expected_cost"],
+                budget=out["target_budget"],
+                dual=out["dual"],
+            )
+            loss = parts["loss"]
+        # Primal-dual dual ascent (detached cost gap); safe outside autograd.
+        model = getattr(self, "model", None)
+        if model is not None and hasattr(model, "dual_update_from_output"):
+            model.dual_update_from_output(out)
+        return loss
+
     def _legacy_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
         preds = out["chain_preds"]
         targets = [ChainForecasting.pool_target(real_value, k) for k in self.chain_lengths]
@@ -650,6 +685,8 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             loss, parts = self._compute_unified_loss(out, real_value)
             self._last_unified_loss_parts = parts
             self._log_unified_loss_parts(epoch, iter_index, parts)
+        elif self.chain_loss_mode == "dynamic_resolution_token":
+            loss = self._dynamic_resolution_token_loss(out, real_value)
         elif self.chain_loss_mode in self.TOKEN_LOSS_MODES:
             loss = self._token_mae_loss(out, real_value)
         else:
