@@ -1,11 +1,12 @@
-# Forced-route architecture equivalence audit
+# Forced-route architecture + raw-scale loss equivalence audit
 
 ## Verdict (synthetic weight-copy)
 
 Under matched kwargs, after copying `ChainForecasting` weights into
 `BudgetConditionedAdaptiveF2FNet.backbone`:
 
-**forced `[3,6,12]` forward tensors match the original full chain to `max_abs_diff=0`.**
+**forced `[3,6,12]` forward tensors match the original full chain**
+(historically `max_abs_diff=0` after weight copy).
 
 Therefore the KASA / progressive-spatial / condition_only adapter **path is
 reused**. Performance gaps on PEMS04 are **not** explained by “forgot KASA”.
@@ -19,12 +20,32 @@ reused**. Performance gaps on PEMS04 are **not** explained by “forgot KASA”.
 | intermediate supervision | none | none (but unused stage 3/6 modules exist) |
 | first-stage condition | `prev_forecast=None` → base encoders | same (no zero condition) |
 
-## Why PEMS MAE can still be worse
+Do **not** claim forced `[12]` equals a dedicated `ChainForecasting([12])`.
 
-1. **forced `[12]`** trains a different object than formal `[3,6,12]` (missing mid-stage losses; full spatial on a lone stage).
-2. Extra **planner** params exist (not used in forced forward) — negligible for eval.
-3. Training dynamics / random init of unused stages still affect shared codebooks.
-4. Compare apples-to-apples: only **forced `[3,6,12]` + weight-aligned init** is architecture-equivalent; random-init training is not guaranteed to match formal seed-1 numbers.
+## Loss equivalence (corrected)
+
+### Forward architecture equivalence
+forced `[3,6,12]` after weight copy: tensor alignment holds.
+
+### Old loss-audit false positive
+Earlier audits compared:
+
+- `forecast_state_token_mae(... without rescale_pair)`
+- `baseline_compatible_token_mae(... without rescale_pair)`
+
+Both sides computed **normalized-scale** MAE, so `abs_diff=0` did **not** prove
+equivalence to the original runner (which always passes `rescale_pair`).
+
+### Fixed standard (raw physical scale)
+Audits must pass all of:
+
+1. scalar loss with synthetic / runner `rescale_pair` (`abs_diff < 1e-7`)
+2. per-stage prediction gradients under the same rescale (`max_abs_diff < 1e-7`)
+3. null-mask semantics: normalized target `0` is **valid** after inverse transform;
+   only physical `null_val` (e.g. raw `0`) is masked. Canonical probe expects loss `40.0`.
+
+Runner unification: `_token_mae_loss` and `_baseline_compatible_loss` both call
+`_token_mae_for_resolutions(..., rescale_pair=self._rescale_pair)`.
 
 ## Forced mode priority
 
@@ -32,11 +53,8 @@ reused**. Performance gaps on PEMS04 are **not** explained by “forgot KASA”.
 - Model: `sandwich_routes` + forced → `RuntimeError`.
 - First-batch log: `executed_routes / chain_resolutions / actual_stage_count`.
 
-## Loss
+## Config / checkpoint isolation
 
-`baseline_compatible_token_mae` → `forecast_state_token_mae` (abs diff 0 on synthetic).
-
-## Config
-
-PEMS formal vs forced generated configs share d_*, progressive lists, lr, milestones, bs.
-Diffs: `MODEL.NAME/ARCH`, `chain_loss_mode` name (`token_normalized` vs `baseline_compatible`), budget-only keys.
+`experiment_tag` now includes `phase`, `loss_mode`, and a short SHA1 of the full
+`run_signature` (including `code_version` = git commit + source fingerprint), so
+normalized-loss runs and raw-scale runs do not share `.../forced_3-6-12/seed1`.

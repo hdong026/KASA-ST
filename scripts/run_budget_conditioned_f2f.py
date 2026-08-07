@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import importlib.util
 import math
 import os
@@ -39,6 +40,15 @@ from basicts.archs.arch_zoo.ChainForecasting_arch.budget_route_utils import (
 
 BASE_VARIANT = "chain_budget_conditioned_adaptive_f2f_kasa_condition_adapter_token_loss"
 
+FINGERPRINT_PATHS = [
+    ROOT / "basicts/archs/arch_zoo/ChainForecasting_arch/budget_conditioned_adaptive_f2f.py",
+    ROOT / "basicts/archs/arch_zoo/ChainForecasting_arch/budget_conditioned_f2f_loss.py",
+    ROOT / "basicts/runners/runner_zoo/chain_forecasting_runner.py",
+    ROOT / "basicts/archs/arch_zoo/ChainForecasting_arch/budget_route_utils.py",
+    ROOT / "scripts/run_budget_conditioned_f2f.py",
+    ROOT / "scripts/run_chain_forecasting_horizon.py",
+]
+
 
 def git_commit() -> str:
     try:
@@ -51,6 +61,26 @@ def git_commit() -> str:
         return out
     except Exception:
         return "unknown"
+
+
+def source_fingerprint() -> str:
+    sha = hashlib.sha1()
+    for path in FINGERPRINT_PATHS:
+        sha.update(str(path.relative_to(ROOT)).encode("utf-8"))
+        sha.update(b"\0")
+        if path.is_file():
+            sha.update(path.read_bytes())
+        sha.update(b"\0")
+    return sha.hexdigest()[:10]
+
+
+def code_version_string() -> str:
+    return f"{git_commit()}-{source_fingerprint()}"
+
+
+OLD_FORCED_3612_CKPT = (
+    ROOT / "checkpoints/PEMS04/H12/budget_f2f/forced_3-6-12/seed1"
+)
 
 
 def experiment_paths(dataset: str, horizon: int, experiment_tag: str, seed: int) -> dict[str, Path]:
@@ -434,6 +464,8 @@ def build_jobs(args) -> list[dict]:
     jobs = []
     tag_by_variant: dict[str, str] = {}
     commit = git_commit()
+    fingerprint = source_fingerprint()
+    code_ver = f"{commit}-{fingerprint}"
     for h in args.horizons:
         for seed in args.seeds:
             meta_sig = build_run_signature(
@@ -451,6 +483,7 @@ def build_jobs(args) -> list[dict]:
                 route_cost_type=args.route_cost_type,
                 route_cost_file=args.route_cost_file,
                 run_tag=args.run_tag,
+                code_version=code_ver,
             )
             experiment_tag = meta_sig["experiment_tag"]
             unique = unique_variant_key(experiment_tag)
@@ -490,6 +523,7 @@ def build_jobs(args) -> list[dict]:
                     "unique_variant": unique,
                     "experiment_tag": experiment_tag,
                     "run_signature": meta_sig["run_signature"],
+                    "digest": meta_sig.get("digest"),
                     "forced_route": forced,
                     "route_selection_mode": route_mode,
                     "training_phase": args.training_phase,
@@ -497,11 +531,51 @@ def build_jobs(args) -> list[dict]:
                     "inference_intensity": float(args.inference_intensity),
                     "candidate_routes_str": "+".join(route_to_key(r) for r in routes),
                     "git_commit": commit,
+                    "source_fingerprint": fingerprint,
+                    "code_version": code_ver,
                     "out": args.out,
                     "markdown": args.markdown,
                 }
             )
     return jobs, tag_by_variant
+
+
+def validate_forced_baseline_config(cfg_path: Path, expected_ckpt: Path) -> None:
+    """Fail fast if generated CFG drifts from forced baseline_compatible contract."""
+    spec = importlib.util.spec_from_file_location(
+        f"_budget_f2f_cfg_validate_{cfg_path.stem}", cfg_path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load generated config: {cfg_path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    cfg = mod.CFG
+    param = dict(cfg.MODEL.PARAM)
+    checks = {
+        "forced_route": [3, 6, 12],
+        "route_selection_mode": "forced",
+        "route_sampling": "none",
+        "training_phase": "supernet",
+        "loss_mode": "baseline_compatible",
+        "chain_loss_mode": "baseline_compatible",
+    }
+    errors = []
+    for key, want in checks.items():
+        got = param.get(key)
+        if got != want:
+            errors.append(f"MODEL.PARAM[{key!r}]={got!r} expected {want!r}")
+    ckpt = Path(cfg.TRAIN.CKPT_SAVE_DIR)
+    if not ckpt.is_absolute():
+        ckpt = (ROOT / ckpt).resolve()
+    want_ckpt = expected_ckpt.resolve()
+    if ckpt != want_ckpt:
+        errors.append(
+            f"TRAIN.CKPT_SAVE_DIR={ckpt} expected {want_ckpt}"
+        )
+    if errors:
+        raise RuntimeError(
+            "generated config validation failed:\n  - " + "\n  - ".join(errors)
+        )
 
 
 def main() -> int:
@@ -634,6 +708,14 @@ def main() -> int:
         job["ckpt_dir"] = base.ckpt_dir_for(
             job["horizon"], job["unique_variant"], job["seed"]
         )
+        # Forced baseline_compatible: assert CFG contract before any EasyTorch start.
+        if (
+            job.get("forced_route") == [3, 6, 12]
+            and job.get("loss_mode") == "baseline_compatible"
+            and job.get("route_selection_mode") == "forced"
+            and job.get("training_phase") == "supernet"
+        ):
+            validate_forced_baseline_config(cfg, Path(job["ckpt_dir"]))
 
     if args.out is None:
         if len(jobs) == 1:
@@ -662,6 +744,20 @@ def main() -> int:
     # ---- dry-run: no training, no data prep ----
     if args.dry_run:
         print("=== budget F2F dry-run (no training) ===\n")
+        print(f"git_commit: {jobs[0].get('git_commit') if jobs else git_commit()}")
+        print(
+            f"source_fingerprint: "
+            f"{jobs[0].get('source_fingerprint') if jobs else source_fingerprint()}"
+        )
+        print(
+            f"code_version: {jobs[0].get('code_version') if jobs else code_version_string()}"
+        )
+        print(f"old_forced_3-6-12_ckpt (must differ): {OLD_FORCED_3612_CKPT}")
+        print(
+            "loss_scale=raw_physical_scale loss_mask_scale=raw_physical_scale "
+            "rescale_pair_enabled=True"
+        )
+        print()
         sigs = []
         ckpts = []
         for job in jobs:
@@ -673,20 +769,31 @@ def main() -> int:
                 job["run_signature"],
             )
             would_skip = bool(args.skip_existing and not args.overwrite and done)
+            ckpt_path = Path(job["ckpt_dir"])
+            ckpt_exists = ckpt_path.exists()
+            would_resume = bool(ckpt_exists and not args.overwrite)
             print(f"experiment_tag: {job['experiment_tag']}")
-            print(f"  run_signature: {job['run_signature']}")
+            print(f"  complete_run_signature: {job['run_signature']}")
+            print(f"  digest: {job.get('digest')}")
             print(f"  forced_route: {job['forced_route']}")
+            print(f"  loss_mode: {job['loss_mode']}")
+            print(f"  training_phase: {job['training_phase']}")
+            print(f"  route_selection_mode: {job['route_selection_mode']}")
             print(f"  unique_variant: {job['unique_variant']}")
-            print(f"  temp_config: {job['cfg_path']}")
-            print(f"  checkpoint_dir: {job['ckpt_dir']}")
+            print(f"  config_path: {job['cfg_path']}")
+            print(f"  checkpoint_directory: {job['ckpt_dir']}")
+            print(
+                f"  differs_from_old_forced_3-6-12: "
+                f"{ckpt_path.resolve() != OLD_FORCED_3612_CKPT.resolve()}"
+            )
+            print(f"  existing_checkpoint: {ckpt_exists}")
+            print(f"  would_resume_without_overwrite: {would_resume}")
+            print(f"  would_skip: {would_skip}")
             print(f"  output_csv: {job['out']}")
             print(f"  output_md: {job['markdown']}")
-            print(f"  would_skip: {would_skip}")
-            ckpt_exists = Path(job["ckpt_dir"]).exists()
-            print(f"  ckpt_dir_exists: {ckpt_exists}")
             if args.overwrite and ckpt_exists:
                 print(
-                    "  overwrite_action: ARCHIVE existing ckpt/log "
+                    f"  overwrite_would_archive: {ckpt_path} "
                     "(rename; EasyTorch will not Resume)"
                 )
             elif ckpt_exists and not args.overwrite:
@@ -707,6 +814,11 @@ def main() -> int:
             raise SystemExit("ERROR: duplicate run_signature among jobs")
         if len(set(ckpts)) != len(ckpts):
             raise SystemExit("ERROR: duplicate checkpoint_dir among jobs")
+        for c in ckpts:
+            if Path(c).resolve() == OLD_FORCED_3612_CKPT.resolve():
+                raise SystemExit(
+                    "ERROR: new checkpoint path collides with old forced_3-6-12 path"
+                )
         print(f"unique signatures: {len(set(sigs))} / {len(sigs)}")
         print(f"unique checkpoint dirs: {len(set(ckpts))} / {len(ckpts)}")
         print("dry-run OK")

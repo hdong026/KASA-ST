@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Callable, Optional
 
 import torch
 import torch.nn.functional as F
@@ -12,12 +12,20 @@ from basicts.archs.arch_zoo.ChainForecasting_arch.ChainForecasting_arch import (
 )
 from basicts.losses.forecast_state_token_mae import forecast_state_token_mae
 
+RescalePair = Optional[
+    Callable[
+        [torch.Tensor, torch.Tensor],
+        tuple[torch.Tensor, torch.Tensor],
+    ]
+]
+
 
 def mid_token_mae(
     chain_preds: list[torch.Tensor],
     chain_resolutions: list[int],
     full_target: torch.Tensor,
     null_val: float = 0.0,
+    rescale_pair: RescalePair = None,
 ) -> torch.Tensor:
     """Token MAE over intermediate stages only (exclude final H)."""
     if len(chain_preds) <= 1:
@@ -25,7 +33,12 @@ def mid_token_mae(
     preds = chain_preds[:-1]
     resolutions = chain_resolutions[:-1]
     targets = [ChainForecasting.pool_target(full_target, k) for k in resolutions]
-    return forecast_state_token_mae(preds, targets, null_val=null_val)
+    return forecast_state_token_mae(
+        preds,
+        targets,
+        null_val=null_val,
+        rescale_pair=rescale_pair,
+    )
 
 
 def baseline_compatible_token_mae(
@@ -33,9 +46,15 @@ def baseline_compatible_token_mae(
     chain_resolutions: list[int],
     full_target: torch.Tensor,
     null_val: float = 0.0,
+    rescale_pair: RescalePair = None,
 ) -> torch.Tensor:
     targets = [ChainForecasting.pool_target(full_target, k) for k in chain_resolutions]
-    return forecast_state_token_mae(chain_preds, targets, null_val=null_val)
+    return forecast_state_token_mae(
+        chain_preds,
+        targets,
+        null_val=null_val,
+        rescale_pair=rescale_pair,
+    )
 
 
 def budget_violation(selected_cost: torch.Tensor, budget: torch.Tensor) -> torch.Tensor:
@@ -45,8 +64,11 @@ def budget_violation(selected_cost: torch.Tensor, budget: torch.Tensor) -> torch
 def route_ce_loss(
     route_logits: torch.Tensor | None,
     oracle_route_id: torch.Tensor | None,
+    reference: torch.Tensor | None = None,
 ) -> torch.Tensor:
     if route_logits is None or oracle_route_id is None:
+        if reference is not None:
+            return reference.new_zeros(())
         if route_logits is not None:
             return route_logits.new_zeros(())
         if oracle_route_id is not None:
@@ -75,10 +97,23 @@ def dynamic_fair_total_loss(
     lambda_imitation: float = 1.0,
     lambda_budget: float = 0.1,
     null_val: float = 0.0,
+    rescale_pair: RescalePair = None,
 ) -> dict[str, torch.Tensor]:
-    l_final = (final_pred - full_target[..., : final_pred.shape[-1]]).abs().mean()
-    l_mid = mid_token_mae(chain_preds, chain_resolutions, full_target, null_val=null_val)
-    l_ce = route_ce_loss(route_logits, oracle_route_id)
+    final_target = full_target[..., : final_pred.shape[-1]]
+    l_final = forecast_state_token_mae(
+        [final_pred],
+        [final_target],
+        null_val=null_val,
+        rescale_pair=rescale_pair,
+    )
+    l_mid = mid_token_mae(
+        chain_preds,
+        chain_resolutions,
+        full_target,
+        null_val=null_val,
+        rescale_pair=rescale_pair,
+    )
+    l_ce = route_ce_loss(route_logits, oracle_route_id, reference=final_pred)
     if selected_cost is None or budget is None:
         l_bud = final_pred.new_zeros(())
     else:

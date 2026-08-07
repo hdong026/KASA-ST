@@ -26,7 +26,8 @@
 - `ForecastStateAdapter` (condition_only)
 - `ABCDSpatialModule` progressive configs
 - `ChainForecasting.pool_target`
-- `forecast_state_token_mae` for `baseline_compatible`
+- `forecast_state_token_mae(..., rescale_pair=...)` for both `token_normalized`
+  and `baseline_compatible` (raw physical scale + null mask after inverse transform)
 - Formal VARIANT entry untouched
 
 ## This implementation’s fix
@@ -38,6 +39,8 @@
 - Scheme A for missing condition: first stage of any route uses `prev_forecast=None`
   (native KASA path); later stages use interpolate + optional condition_only adapter
   whenever `previous_state is not None` and stage is not final (matches formal [3,6,12]).
+- Forecasting losses are always computed in the **runner** with `self._rescale_pair`;
+  model-side `loss_terms` are diagnostics only.
 
 ## Choice: Scheme A
 
@@ -51,8 +54,14 @@ use the existing cond encoders. No dynamic Parameter rebuild; closest to formal 
 | Temporal stages | `temporal_steps` ×3 (KASA) | same modules via shared `ChainForecasting` supernet |
 | Progressive spatial | stage idx 0/1/2 | same modules indexed by resolution tier |
 | Condition adapter | condition_only at middle stage | condition_only on non-final stages with previous |
-| Loss | `forecast_state_token_mae` | `baseline_compatible` → same helper |
+| Loss | `forecast_state_token_mae` + runner `rescale_pair` | same helper via `_token_mae_for_resolutions` |
 | Extra params | — | lightweight `BudgetRoutePlanner` (~few K) |
 | Node set N | fixed | fixed (no clustering) |
 
 Expected param scale: multi-million (KASA multi-stage), **not** ~0.02M packed executor.
+
+## Loss audit caveat
+
+Do not treat “same helper name” without `rescale_pair` as runner equivalence.
+Normalized-scale comparisons are false positives; raw-scale scalar, gradient, and
+null-mask probes are required.

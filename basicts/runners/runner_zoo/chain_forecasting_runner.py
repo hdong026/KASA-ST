@@ -481,21 +481,34 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         }
         return loss, parts
 
-    def _token_mae_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
-        """Token-normalized MAE on post-spatial forecast states (no stage reweighting)."""
-        preds = list(out["chain_preds"])
-        targets = [ChainForecasting.pool_target(real_value, k) for k in self.chain_lengths]
-        if len(preds) != len(targets):
+    def _token_mae_for_resolutions(
+        self,
+        preds: list[torch.Tensor],
+        resolutions: list[int],
+        real_value: torch.Tensor,
+    ) -> torch.Tensor:
+        if len(preds) != len(resolutions):
             raise ValueError(
-                f"chain_preds ({len(preds)}) and chain_lengths ({len(targets)}) mismatch."
+                f"pred count {len(preds)} != resolution count {len(resolutions)}"
             )
-        # Do not add out["pred"] again: for interleaved spatial, chain_preds[-1] is the
-        # final forecast state already (avoids double-counting T12).
+        targets = [
+            ChainForecasting.pool_target(real_value, int(k)) for k in resolutions
+        ]
         return forecast_state_token_mae(
             preds,
             targets,
             null_val=self.null_val,
             rescale_pair=self._rescale_pair,
+        )
+
+    def _token_mae_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
+        """Token-normalized MAE on post-spatial forecast states (no stage reweighting)."""
+        # Do not add out["pred"] again: for interleaved spatial, chain_preds[-1] is the
+        # final forecast state already (avoids double-counting T12).
+        return self._token_mae_for_resolutions(
+            list(out["chain_preds"]),
+            list(self.chain_lengths),
+            real_value,
         )
 
     def _dynamic_resolution_token_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
@@ -544,19 +557,15 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         return parts["loss"]
 
     def _baseline_compatible_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
-        from basicts.archs.arch_zoo.ChainForecasting_arch.budget_conditioned_f2f_loss import (
-            baseline_compatible_token_mae,
-        )
-
+        # Same runner helper as token_normalized (includes rescale_pair / raw null mask).
         if out.get("sandwich_outputs"):
             losses = []
             for so in out["sandwich_outputs"]:
                 losses.append(
-                    baseline_compatible_token_mae(
+                    self._token_mae_for_resolutions(
                         list(so["chain_preds"]),
                         list(so["chain_resolutions"]),
                         real_value,
-                        null_val=self.null_val,
                     )
                 )
             return sum(losses) / float(len(losses))
@@ -564,11 +573,10 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         resolutions = out.get("chain_resolutions")
         if resolutions is None:
             resolutions = list(self.chain_lengths)
-        return baseline_compatible_token_mae(
+        return self._token_mae_for_resolutions(
             list(out["chain_preds"]),
             list(resolutions),
             real_value,
-            null_val=self.null_val,
         )
 
     def _dynamic_fair_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
@@ -576,6 +584,7 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             dynamic_fair_total_loss,
         )
 
+        # Never trust model-side loss_terms: model has no runner scaler.
         if out.get("sandwich_outputs"):
             losses = []
             last_parts = None
@@ -590,6 +599,7 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
                     selected_cost=out.get("selected_cost"),
                     budget=out.get("budget"),
                     null_val=self.null_val,
+                    rescale_pair=self._rescale_pair,
                     lambda_imitation=0.0,  # supernet: no planner CE
                 )
                 losses.append(parts["loss"])
@@ -605,24 +615,24 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
                 self._last_budget_f2f_loss_parts["stage_count"] = float(
                     len(out.get("chain_resolutions") or [])
                 )
+                self._last_budget_f2f_loss_parts["loss_scale"] = "raw_physical_scale"
+                self._last_budget_f2f_loss_parts["loss_mask_scale"] = "raw_physical_scale"
+                self._last_budget_f2f_loss_parts["rescale_pair_enabled"] = True
             return loss
 
-        if "loss_terms" in out and out["loss_terms"] is not None and "loss" in out["loss_terms"]:
-            parts = out["loss_terms"]
-            loss = parts["loss"]
-        else:
-            parts = dynamic_fair_total_loss(
-                final_pred=out["pred"],
-                full_target=real_value,
-                chain_preds=list(out["chain_preds"]),
-                chain_resolutions=list(out.get("chain_resolutions") or self.chain_lengths),
-                route_logits=out.get("route_logits"),
-                oracle_route_id=out.get("oracle_route_id"),
-                selected_cost=out.get("selected_cost"),
-                budget=out.get("budget"),
-                null_val=self.null_val,
-            )
-            loss = parts["loss"]
+        parts = dynamic_fair_total_loss(
+            final_pred=out["pred"],
+            full_target=real_value,
+            chain_preds=list(out["chain_preds"]),
+            chain_resolutions=list(out.get("chain_resolutions") or self.chain_lengths),
+            route_logits=out.get("route_logits"),
+            oracle_route_id=out.get("oracle_route_id"),
+            selected_cost=out.get("selected_cost"),
+            budget=out.get("budget"),
+            null_val=self.null_val,
+            rescale_pair=self._rescale_pair,
+        )
+        loss = parts["loss"]
         self._last_budget_f2f_loss_parts = {
             k: float(v.detach().cpu()) if torch.is_tensor(v) else float(v)
             for k, v in parts.items()
@@ -632,6 +642,9 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         self._last_budget_f2f_loss_parts["stage_count"] = float(
             len(out.get("chain_resolutions") or [])
         )
+        self._last_budget_f2f_loss_parts["loss_scale"] = "raw_physical_scale"
+        self._last_budget_f2f_loss_parts["loss_mask_scale"] = "raw_physical_scale"
+        self._last_budget_f2f_loss_parts["rescale_pair_enabled"] = True
         return loss
 
     def _legacy_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
@@ -969,6 +982,11 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             loss = self._one_shot_resolution_token_loss(out, real_value)
         elif self.chain_loss_mode == "baseline_compatible":
             loss = self._baseline_compatible_loss(out, real_value)
+            if iter_index == 0:
+                self.logger.info(
+                    "[budget_f2f loss] loss_scale=raw_physical_scale "
+                    "loss_mask_scale=raw_physical_scale rescale_pair_enabled=True"
+                )
         elif self.chain_loss_mode == "dynamic_fair":
             loss = self._dynamic_fair_loss(out, real_value)
             if iter_index == 0 and hasattr(self, "_last_budget_f2f_loss_parts"):

@@ -166,17 +166,12 @@ def build_run_signature(
     route_cost_type: str,
     route_cost_file: str | None = None,
     run_tag: str | None = None,
+    code_version: str | None = None,
 ) -> dict[str, Any]:
     """Full experiment identity; used for paths, skip, and result rows."""
+    import hashlib
+
     fr_tag = forced_route_tag(forced_route)
-    if fr_tag is not None:
-        experiment_tag = fr_tag
-    else:
-        experiment_tag = (
-            f"{training_phase}_eta{float(inference_intensity):.2f}_{loss_mode}"
-        )
-        if run_tag:
-            experiment_tag = f"{experiment_tag}_{run_tag}"
     sig_parts = [
         f"ds={dataset}",
         f"H={int(horizon)}",
@@ -191,16 +186,40 @@ def build_run_signature(
         f"eta={float(inference_intensity):.4f}",
         f"cost={route_cost_type}",
         f"cost_file={Path(route_cost_file).name if route_cost_file else 'none'}",
+        f"code={code_version or 'unknown'}",
     ]
     if run_tag:
         sig_parts.append(f"tag={run_tag}")
     run_signature = "|".join(sig_parts)
+    digest = hashlib.sha1(run_signature.encode("utf-8")).hexdigest()[:10]
+    # EasyTorch imports cfg as a Python module path; dots in the filename break import.
+    def _safe_tag(text: str) -> str:
+        return (
+            str(text)
+            .replace(".", "p")
+            .replace("/", "-")
+            .replace("\\", "-")
+            .replace(" ", "_")
+        )
+
+    if fr_tag is not None:
+        # e.g. forced_3-6-12_supernet_baseline_compatible_<digest>
+        experiment_tag = f"{fr_tag}_{training_phase}_{loss_mode}_{digest}"
+    else:
+        eta_tag = f"eta{float(inference_intensity):.2f}".replace(".", "p")
+        base_tag = f"{training_phase}_{eta_tag}_{loss_mode}"
+        if run_tag:
+            base_tag = f"{base_tag}_{run_tag}"
+        experiment_tag = f"{base_tag}_{digest}"
+    experiment_tag = _safe_tag(experiment_tag)
     return {
         "run_signature": run_signature,
         "experiment_tag": experiment_tag,
         "forced_route_tag": fr_tag,
         "forced_route": list(forced_route) if forced_route else None,
         "candidate_routes": [list(r) for r in candidate_routes],
+        "code_version": code_version or "unknown",
+        "digest": digest,
     }
 
 
