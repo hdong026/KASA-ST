@@ -346,6 +346,84 @@ VARIANT_SPECS: dict[str, dict] = {
         "forecast_state_adapter_hidden_dim": 16,
         "forecast_state_adapter_epsilon": 0.02,
     },
+    # Adaptive Forecast Refinement Route Controller (recommended adaptive workflow).
+    "chain_adaptive_forecast_refinement_route_kasa_condition_adapter_token_loss": {
+        "is_chain": False,
+        "model_name": "AdaptiveForecastRefinementRouteNet",
+        "model_arch": "AdaptiveForecastRefinementRouteNet",
+        "chain_loss_mode": "dynamic_fair",
+        "chain_loss_weights": None,
+        "inference_intensity": 0.5,
+        "route_selection_mode": "sample",
+        "route_granularity": "sample",
+        "route_cost_type": "normalized_static_cost",
+        "planner_hidden_dim": 64,
+        "training_phase": "refinement_controller",
+        "route_sampling": "none",
+        "loss_mode": "dynamic_fair",
+        "freeze_forecasting_backbone": True,
+        "delta_abs": 0.05,
+        "controller_dim": 128,
+        "pooling_queries": 4,
+        "lambda_abs": 0.25,
+        "lambda_center": 1.0,
+        "lambda_corr": 0.5,
+        "lambda_rank": 1.0,
+        "lambda_full": 0.5,
+        "rank_ignore_margin": 0.02,
+        "rank_temperature": 0.05,
+        "use_prev_condition": True,
+        "spatial_placement": "interleaved_progressive",
+        "progressive_spatial_ratios": [0.25, 0.5, 1.0],
+        "progressive_spatial_topks": [8, 16, 32],
+        "progressive_spatial_alphas": [0.03, 0.06, 0.10],
+        "post_spatial_mode": "adaptive_only",
+        "use_adaptive_adj": True,
+        "use_forecast_state_adapter": True,
+        "forecast_state_adapter_mode": "condition_only",
+        "forecast_state_adapter_hidden_dim": 16,
+        "forecast_state_adapter_epsilon": 0.02,
+    },
+    # Failed/ablation: independent Route Quality Estimator (absolute MAE). Keep for comparison.
+    "chain_budget_conditioned_route_quality_f2f_kasa_condition_adapter_token_loss": {
+        "is_chain": False,
+        "model_name": "BudgetConditionedRouteQualityF2FNet",
+        "model_arch": "BudgetConditionedRouteQualityF2FNet",
+        "chain_loss_mode": "dynamic_fair",
+        "chain_loss_weights": None,
+        "inference_intensity": 0.5,
+        "route_selection_mode": "sample",
+        "route_granularity": "sample",
+        "route_cost_type": "normalized_static_cost",
+        "planner_hidden_dim": 64,
+        "training_phase": "route_quality",
+        "route_sampling": "none",
+        "loss_mode": "dynamic_fair",
+        "freeze_forecasting_backbone": True,
+        "delta_abs": 0.05,
+        "delta_rel": 0.0,
+        "rq_d_model": 128,
+        "rq_temporal_layers": 2,
+        "rq_spatial_query_count": 4,
+        "rq_sample_embedding_dim": 256,
+        "rq_route_embedding_dim": 64,
+        "lambda_abs": 0.25,
+        "lambda_center": 1.0,
+        "lambda_rank": 1.0,
+        "lambda_list": 0.25,
+        "rank_ignore_margin": 0.02,
+        "use_prev_condition": True,
+        "spatial_placement": "interleaved_progressive",
+        "progressive_spatial_ratios": [0.25, 0.5, 1.0],
+        "progressive_spatial_topks": [8, 16, 32],
+        "progressive_spatial_alphas": [0.03, 0.06, 0.10],
+        "post_spatial_mode": "adaptive_only",
+        "use_adaptive_adj": True,
+        "use_forecast_state_adapter": True,
+        "forecast_state_adapter_mode": "condition_only",
+        "forecast_state_adapter_hidden_dim": 16,
+        "forecast_state_adapter_epsilon": 0.02,
+    },
     # Adaptive-resolution gates on forwarded condition only (pilot; F2FNet backbone unchanged)
     "chain_interleaved_adaptive_resolution_gate_state_adapter_fixed_token_loss": {
         "is_chain": True,
@@ -594,6 +672,36 @@ def generate_temp_config(horizon: int, variant: str, seed: int) -> Path:
         if spec.get("num_epochs") is not None:
             lines.append(f"CFG.TRAIN.NUM_EPOCHS = {int(spec['num_epochs'])}")
         # Prefer easytorch FINETUNE_FROM when init_checkpoint is set.
+        if spec.get("init_checkpoint"):
+            lines.append(
+                f'CFG.TRAIN.FINETUNE_FROM = {_py_literal(spec["init_checkpoint"])}'
+            )
+            lines.append("CFG.TRAIN.FINETUNE_STRICT_LOAD = False")
+    if model_arch == "BudgetConditionedRouteQualityF2FNet":
+        lines.append("from basicts.archs import BudgetConditionedRouteQualityF2FNet")
+        lines.append("CFG.MODEL.ARCH = BudgetConditionedRouteQualityF2FNet")
+        lines.append('CFG.MODEL.PARAM.pop("chain_lengths", None)')
+        lines.append(
+            "from basicts.data import IndexedTimeSeriesForecastingDataset"
+        )
+        lines.append("CFG.DATASET_CLS = IndexedTimeSeriesForecastingDataset")
+        if spec.get("num_epochs") is not None:
+            lines.append(f"CFG.TRAIN.NUM_EPOCHS = {int(spec['num_epochs'])}")
+        if spec.get("init_checkpoint"):
+            lines.append(
+                f'CFG.TRAIN.FINETUNE_FROM = {_py_literal(spec["init_checkpoint"])}'
+            )
+            lines.append("CFG.TRAIN.FINETUNE_STRICT_LOAD = False")
+    if model_arch == "AdaptiveForecastRefinementRouteNet":
+        lines.append("from basicts.archs import AdaptiveForecastRefinementRouteNet")
+        lines.append("CFG.MODEL.ARCH = AdaptiveForecastRefinementRouteNet")
+        lines.append('CFG.MODEL.PARAM.pop("chain_lengths", None)')
+        lines.append(
+            "from basicts.data import IndexedTimeSeriesForecastingDataset"
+        )
+        lines.append("CFG.DATASET_CLS = IndexedTimeSeriesForecastingDataset")
+        if spec.get("num_epochs") is not None:
+            lines.append(f"CFG.TRAIN.NUM_EPOCHS = {int(spec['num_epochs'])}")
         if spec.get("init_checkpoint"):
             lines.append(
                 f'CFG.TRAIN.FINETUNE_FROM = {_py_literal(spec["init_checkpoint"])}'

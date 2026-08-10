@@ -361,6 +361,65 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
             raise KeyError(f"resolution {res} not in supernet {self.full_resolutions}")
         return self.res_to_index[res]
 
+    def extract_pre_route_context(
+        self,
+        history_data: torch.Tensor,
+        *,
+        detach: bool = True,
+    ) -> torch.Tensor:
+        """Read-only shared forecasting representation before route execution.
+
+        Priority-B tap: reuses the horizon stage ``KASATemporalStep.patch_encoder``
+        (shared backbone weights; no new encoder). Does not call ``_execute_route``
+        and does not alter default forecasting numerics.
+
+        Returns:
+            H_shared with shape ``[B, M, N, D]`` where
+            ``D = d_d (+ d_spa if spatial codebook enabled)``.
+        """
+        from math import ceil
+
+        if int(self.output_len) not in self.res_to_index:
+            raise RuntimeError(
+                f"horizon H={self.output_len} missing from supernet resolutions "
+                f"{self.full_resolutions}"
+            )
+        step = self.backbone.temporal_steps[self.res_to_index[int(self.output_len)]]
+        pe = step.patch_encoder
+        x_main = history_data[..., :3]
+        in_len_add = ceil(1.0 * step.input_len / step.stride) * step.stride - step.input_len
+        if in_len_add:
+            step_input = torch.cat(
+                (x_main[:, -1:, :, :].expand(-1, in_len_add, -1, -1), x_main),
+                dim=1,
+            )
+        else:
+            step_input = x_main
+        patch_input = step_input.unfold(
+            dimension=1, size=step.patch_len, step=step.patch_len
+        ).permute(0, 1, 4, 2, 3)
+        # Embedding path only (no forecast projection1).
+        if pe.patch_embedding_mode == "serial_concat":
+            data_emb = pe._embed_serial_concat(patch_input)
+        elif pe.patch_embedding_mode == "time_feature_2d":
+            data_emb = pe._embed_time_feature_2d(patch_input)
+        else:
+            raise ValueError(
+                f"Unsupported patch_embedding_mode for context tap: {pe.patch_embedding_mode}"
+            )
+        data_emb = pe.data_encoder(data_emb.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+        # [B, M, N, d_d]
+        spatial_codebook = self.backbone._spatial_codebook()
+        if spatial_codebook is not None and pe.if_spatial:
+            b, m, n, _ = data_emb.shape
+            spa = spatial_codebook.unsqueeze(0).unsqueeze(1).expand(b, m, n, -1)
+            h_shared = torch.cat([data_emb, spa], dim=-1)
+        else:
+            h_shared = data_emb
+        if detach:
+            h_shared = h_shared.detach()
+        return h_shared
+
     def _execute_route(
         self,
         history_data: torch.Tensor,

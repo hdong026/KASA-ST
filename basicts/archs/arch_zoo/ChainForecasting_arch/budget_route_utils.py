@@ -116,34 +116,75 @@ def load_route_costs(
     horizon: int,
     cost_type: str = "normalized_static_cost",
 ) -> list[float]:
+    """Load route costs.
+
+    ``cost_type`` / route-cost-source aliases:
+      static / normalized / normalized_static_cost -> heuristic or JSON normalized_cost
+      measured_latency / latency -> JSON mean_latency_ms (or measured_latency_ms), then normalize
+    """
     cost_type = str(cost_type).lower()
+    static_aliases = {"normalized_static_cost", "static", "normalized"}
+    latency_aliases = {
+        "measured_latency",
+        "latency",
+        "measured_latency_ms",
+        "mean_latency_ms",
+    }
     if path is None:
-        if cost_type not in {"normalized_static_cost", "static", "normalized"}:
+        if cost_type not in static_aliases:
             raise ValueError(
                 f"ROUTE_COST_FILE is required for cost_type={cost_type}"
             )
         return normalized_static_costs(routes, horizon)
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    key = "measured_latency_ms" if "latency" in cost_type else "normalized_static_cost"
     if "routes" not in data:
         raise ValueError(f"route cost file missing 'routes': {path}")
+    if cost_type in latency_aliases or "latency" in cost_type:
+        preferred_keys = (
+            "normalized_cost",
+            "mean_latency_ms",
+            "measured_latency_ms",
+            "median_latency_ms",
+            "cost",
+        )
+        use_normalize = True
+    else:
+        preferred_keys = (
+            "normalized_cost",
+            "normalized_static_cost",
+            "cost",
+            "mean_latency_ms",
+        )
+        use_normalize = False
     by_key = {}
+    raw_latency = {}
     for entry in data["routes"]:
         r = tuple(int(x) for x in entry["route"])
-        if key not in entry and "cost" in entry:
-            by_key[r] = float(entry["cost"])
-        else:
-            by_key[r] = float(entry[key])
+        chosen = None
+        for key in preferred_keys:
+            if key in entry:
+                chosen = float(entry[key])
+                break
+        if chosen is None:
+            raise ValueError(f"route entry missing cost fields for {list(r)} in {path}")
+        by_key[r] = chosen
+        if "mean_latency_ms" in entry:
+            raw_latency[r] = float(entry["mean_latency_ms"])
+        elif "measured_latency_ms" in entry:
+            raw_latency[r] = float(entry["measured_latency_ms"])
     out = []
     for r in routes:
         tr = tuple(int(x) for x in r)
         if tr not in by_key:
             raise ValueError(f"missing cost for route {list(tr)} in {path}")
-        out.append(by_key[tr])
-    # Normalize latency to [min,1]-style relative scale for budget compare if needed
-    if "latency" in cost_type:
-        m = max(out) if out else 1.0
-        out = [c / m for c in out]
+        # Prefer explicit normalized_cost when present for budget comparisons.
+        entry_cost = by_key[tr]
+        out.append(entry_cost)
+    if use_normalize:
+        # If values look like milliseconds (>>1), normalize by max.
+        if max(out) > 1.5:
+            m = max(out) if out else 1.0
+            out = [c / m for c in out]
     return out
 
 
