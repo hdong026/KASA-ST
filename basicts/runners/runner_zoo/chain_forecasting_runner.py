@@ -152,8 +152,20 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         self.budget_oracle_file = param.get("oracle_file")
         self.budget_freeze_backbone = bool(param.get("freeze_forecasting_backbone", False))
         self.budget_inference_intensity = float(param.get("inference_intensity", 0.5))
+        self.planner_training_intensities = [
+            float(x)
+            for x in (
+                param.get("planner_training_intensities")
+                or [0.0, 0.25, 0.5, 0.75, 1.0]
+            )
+        ]
+        self.lambda_mid = float(param.get("lambda_mid", 1.0))
+        self.lambda_imitation = float(param.get("lambda_imitation", 1.0))
+        self.lambda_budget = float(param.get("lambda_budget", 0.0))
         self._budget_oracle_by_index: dict[tuple[int, float], int] | None = None
+        self._budget_oracle_meta: dict | None = None
         self._budget_f2f_logged_once = False
+        self._last_sample_indices = None
         if self.budget_oracle_file:
             self._load_budget_oracle(self.budget_oracle_file)
         if self.budget_freeze_backbone and hasattr(self.model, "freeze_backbone"):
@@ -163,13 +175,127 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         import json
         from pathlib import Path
 
+        from basicts.archs.arch_zoo.ChainForecasting_arch.budget_route_utils import (
+            route_to_key,
+        )
+
         data = json.loads(Path(path).read_text(encoding="utf-8"))
-        records = data.get("records", data)
+        meta = data.get("metadata") or {}
+        records = data.get("records", data if isinstance(data, list) else [])
+        if not meta:
+            raise RuntimeError(
+                f"oracle file {path} missing metadata; regenerate with "
+                "scripts/build_budget_route_oracle.py"
+            )
+
+        # Strict metadata validation against the live model / cfg.
+        model_routes = [list(r) for r in getattr(self.model, "candidate_routes", [])]
+        model_costs = [
+            float(x) for x in getattr(self.model, "route_costs").detach().cpu().tolist()
+        ]
+        meta_routes = [list(r) for r in meta.get("candidate_routes", [])]
+        meta_costs = [float(x) for x in meta.get("route_costs", [])]
+        meta_order = list(meta.get("candidate_routes_order") or [])
+        if not meta_routes:
+            raise RuntimeError(f"oracle metadata missing candidate_routes: {path}")
+        if len(meta_routes) != len(model_routes):
+            raise RuntimeError(
+                f"oracle candidate count {len(meta_routes)} != model {len(model_routes)}"
+            )
+        if meta_routes != model_routes:
+            raise RuntimeError(
+                "oracle candidate route order/content mismatch:\n"
+                f"  oracle={meta_routes}\n  model={model_routes}"
+            )
+        if meta_order and meta_order != [route_to_key(r) for r in model_routes]:
+            raise RuntimeError(
+                f"oracle candidate_routes_order mismatch: {meta_order} vs "
+                f"{[route_to_key(r) for r in model_routes]}"
+            )
+        if len(meta_costs) != len(model_costs):
+            raise RuntimeError("oracle route_costs length mismatch")
+        if any(abs(a - b) > 1e-6 for a, b in zip(meta_costs, model_costs)):
+            raise RuntimeError(
+                f"oracle route_costs mismatch: oracle={meta_costs} model={model_costs}"
+            )
+        cfg_ds = str(getattr(self, "dataset_name", "") or "")
+        # Prefer cfg dataset name when available on runner
+        if hasattr(self, "cfg"):
+            try:
+                cfg_ds = str(self.cfg["DATASET_NAME"])
+            except Exception:
+                pass
+        if meta.get("dataset") and cfg_ds and str(meta["dataset"]) != cfg_ds:
+            raise RuntimeError(
+                f"oracle dataset {meta.get('dataset')} != cfg dataset {cfg_ds}"
+            )
+        if meta.get("horizon") is not None and int(meta["horizon"]) != int(
+            getattr(self.model, "output_len", -1)
+        ):
+            raise RuntimeError(
+                f"oracle horizon {meta.get('horizon')} != model H={getattr(self.model, 'output_len', None)}"
+            )
+        meta_intensities = sorted(float(x) for x in meta.get("intensities", []))
+        plan_intensities = sorted(float(x) for x in self.planner_training_intensities)
+        if meta_intensities and plan_intensities:
+            # Require planner training intensities ⊆ oracle intensities
+            for eta in plan_intensities:
+                if not any(abs(eta - m) < 1e-8 for m in meta_intensities):
+                    raise RuntimeError(
+                        f"planner intensity {eta} missing from oracle intensities "
+                        f"{meta_intensities}"
+                    )
+
         table: dict[tuple[int, float], int] = {}
         for rec in records:
             key = (int(rec["sample_index"]), float(rec["intensity"]))
-            table[key] = int(rec["oracle_route_id"])
+            rid = int(rec["oracle_route_id"])
+            feas = rec.get("feasible_route_ids")
+            if feas is not None and rid not in set(int(x) for x in feas):
+                raise RuntimeError(
+                    f"oracle label {rid} not in feasible_route_ids for {key}"
+                )
+            table[key] = rid
         self._budget_oracle_by_index = table
+        self._budget_oracle_meta = meta
+        if getattr(self, "logger", None) is not None:
+            self.logger.info(
+                "[budget_f2f] loaded oracle=%s n_keys=%s split=%s loss_scale=%s",
+                path,
+                len(table),
+                meta.get("split"),
+                meta.get("loss_scale"),
+            )
+
+    def _lookup_oracle_labels(
+        self,
+        sample_indices: torch.Tensor,
+        intensities: torch.Tensor,
+    ) -> torch.Tensor:
+        if self._budget_oracle_by_index is None:
+            raise RuntimeError("oracle table not loaded")
+        idxs = sample_indices.detach().cpu().view(-1).tolist()
+        etas = intensities.detach().cpu().view(-1).tolist()
+        if len(idxs) != len(etas):
+            raise ValueError("sample_indices and intensities length mismatch")
+        labels = []
+        for si, eta in zip(idxs, etas):
+            key = (int(si), float(eta))
+            # Tolerate tiny float noise around stored intensities
+            if key not in self._budget_oracle_by_index:
+                hit = None
+                for (osi, oeta), rid in self._budget_oracle_by_index.items():
+                    if osi == int(si) and abs(oeta - float(eta)) < 1e-6:
+                        hit = rid
+                        break
+                if hit is None:
+                    raise KeyError(
+                        f"missing oracle label for sample_index={si} intensity={eta}"
+                    )
+                labels.append(int(hit))
+            else:
+                labels.append(int(self._budget_oracle_by_index[key]))
+        return torch.tensor(labels, dtype=torch.long, device=sample_indices.device)
 
     def _sample_budget_sandwich_routes(self) -> list[list[int]]:
         from basicts.archs.arch_zoo.ChainForecasting_arch.budget_route_utils import (
@@ -239,9 +365,21 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         train: bool = True,
         **kwargs,
     ) -> tuple:
-        future_data, history_data = data
+        sample_indices = None
+        if isinstance(data, (list, tuple)) and len(data) == 3:
+            future_data, history_data, sample_indices = data
+        elif isinstance(data, (list, tuple)) and len(data) == 2:
+            future_data, history_data = data
+        else:
+            raise ValueError(
+                f"Unsupported batch arity {len(data) if isinstance(data, (list, tuple)) else type(data)}; "
+                "expected (future, history) or (future, history, sample_index)"
+            )
         history_data = self.to_running_device(history_data)
         future_data = self.to_running_device(future_data)
+        if sample_indices is not None:
+            sample_indices = self.to_running_device(sample_indices).long().view(-1)
+        self._last_sample_indices = sample_indices
         batch_size, length, num_nodes, _ = future_data.shape
 
         history_data = self.select_input_features(history_data)
@@ -259,6 +397,9 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             "detach_previous": self.stagewise_detach_previous if self.stagewise_enabled else True,
             "stagewise_sequence": self.stagewise_sequence if self.stagewise_enabled else "full",
         }
+        if sample_indices is not None:
+            fwd_kwargs["sample_indices"] = sample_indices
+
         # Supernet sandwich: CPU-side route lists (no GPU route sync).
         # Forced mode must never receive sandwich_routes.
         forced = getattr(self.model, "forced_route", None)
@@ -285,33 +426,32 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
                 self.budget_training_phase,
             )
             self._budget_forced_logged = True
-        # Planner / joint: attach oracle label when available (batch-constant intensity)
+
+        # Planner / joint: per-sample intensity + oracle labels from sample_index.
         if (
             train
             and self._budget_oracle_by_index is not None
             and self.budget_training_phase in {"planner", "joint"}
         ):
-            # Without per-sample dataset indices in this runner, use intensity-keyed
-            # majority oracle as a batch constant (offline file still drives CE).
-            intensity = float(
-                getattr(self.model, "inference_intensity", self.budget_inference_intensity)
-            )
-            matching = [
-                rid
-                for (idx, eta), rid in self._budget_oracle_by_index.items()
-                if abs(eta - intensity) < 1e-8
-            ]
-            if matching:
-                # Mode of oracle ids under this intensity
-                from collections import Counter
-
-                rid = Counter(matching).most_common(1)[0][0]
-                fwd_kwargs["oracle_route_id"] = torch.full(
-                    (history_data.shape[0],),
-                    int(rid),
-                    device=history_data.device,
-                    dtype=torch.long,
+            if sample_indices is None:
+                raise RuntimeError(
+                    "planner/joint phase requires IndexedTimeSeriesForecastingDataset "
+                    "returning (future, history, sample_index); got 2-tuple batch"
                 )
+            bsz = int(history_data.shape[0])
+            intens = self.planner_training_intensities
+            if not intens:
+                raise RuntimeError("planner_training_intensities is empty")
+            pick = torch.randint(0, len(intens), (bsz,), device=history_data.device)
+            eta = torch.tensor(
+                [float(intens[int(i)]) for i in pick.tolist()],
+                device=history_data.device,
+                dtype=history_data.dtype,
+            )
+            fwd_kwargs["inference_intensity_override"] = eta
+            fwd_kwargs["oracle_route_id"] = self._lookup_oracle_labels(
+                sample_indices, eta
+            )
 
         out = self.model(**fwd_kwargs)
         self._last_chain_out = out
@@ -582,55 +722,109 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
     def _dynamic_fair_loss(self, out: dict, real_value: torch.Tensor) -> torch.Tensor:
         from basicts.archs.arch_zoo.ChainForecasting_arch.budget_conditioned_f2f_loss import (
             dynamic_fair_total_loss,
+            planner_imitation_loss,
         )
+
+        # Planner-only: CE (+ optional expected-cost budget), no forecasting loss.
+        if out.get("planner_only"):
+            lam_im = float(self.lambda_imitation)
+            lam_bud = float(self.lambda_budget)
+            if self.budget_training_phase == "planner":
+                lam_bud = 0.0 if lam_bud == float(self.lambda_budget) else lam_bud
+                # Default planner: imitation only.
+                if abs(lam_bud) < 1e-12:
+                    lam_bud = 0.0
+            parts = planner_imitation_loss(
+                route_logits_masked=out.get("masked_route_logits"),
+                oracle=out.get("oracle_route_id"),
+                expected_cost=out.get("expected_cost"),
+                budget=out.get("budget"),
+                lambda_imitation=lam_im,
+                lambda_budget=lam_bud,
+            )
+            self._last_budget_f2f_loss_parts = {
+                k: float(v.detach().cpu()) if torch.is_tensor(v) else float(v)
+                for k, v in parts.items()
+                if k != "loss" and (torch.is_tensor(v) or isinstance(v, (int, float)))
+            }
+            self._last_budget_f2f_loss_parts["mode"] = "planner_only"
+            self._last_budget_f2f_loss_parts["loss_scale"] = "n/a_route_ce"
+            return parts["loss"]
 
         # Never trust model-side loss_terms: model has no runner scaler.
         if out.get("sandwich_outputs"):
+            sandwich_routes = out.get("sandwich_routes")
+            # Infer routes from each sandwich output's chain_resolutions
+            route_logs = []
             losses = []
-            last_parts = None
             for so in out["sandwich_outputs"]:
                 parts = dynamic_fair_total_loss(
                     final_pred=so["pred"],
                     full_target=real_value,
                     chain_preds=list(so["chain_preds"]),
                     chain_resolutions=list(so["chain_resolutions"]),
-                    route_logits=out.get("route_logits"),
-                    oracle_route_id=out.get("oracle_route_id"),
-                    selected_cost=out.get("selected_cost"),
+                    route_logits=None,
+                    oracle_route_id=None,
+                    expected_cost=None,
                     budget=out.get("budget"),
                     null_val=self.null_val,
                     rescale_pair=self._rescale_pair,
-                    lambda_imitation=0.0,  # supernet: no planner CE
+                    lambda_mid=float(self.lambda_mid),
+                    lambda_imitation=0.0,
+                    lambda_budget=0.0,  # supernet: no budget / CE
                 )
                 losses.append(parts["loss"])
-                last_parts = parts
-            loss = sum(losses) / float(len(losses))
-            if last_parts is not None:
-                self._last_budget_f2f_loss_parts = {
-                    k: float(v.detach().cpu()) if torch.is_tensor(v) else float(v)
-                    for k, v in last_parts.items()
-                    if k != "loss" and (torch.is_tensor(v) or isinstance(v, (int, float)))
-                }
-                self._last_budget_f2f_loss_parts["selected_route"] = "sandwich"
-                self._last_budget_f2f_loss_parts["stage_count"] = float(
-                    len(out.get("chain_resolutions") or [])
+                route_logs.append(
+                    {
+                        "route": list(so.get("chain_resolutions") or []),
+                        "L_final": float(parts["L_final"].detach().cpu()),
+                        "L_mid": float(parts["L_mid_token"].detach().cpu())
+                        if torch.is_tensor(parts["L_mid_token"])
+                        else float(parts["L_mid_token"]),
+                        "total": float(parts["loss"].detach().cpu()),
+                    }
                 )
-                self._last_budget_f2f_loss_parts["loss_scale"] = "raw_physical_scale"
-                self._last_budget_f2f_loss_parts["loss_mask_scale"] = "raw_physical_scale"
-                self._last_budget_f2f_loss_parts["rescale_pair_enabled"] = True
+            loss = sum(losses) / float(len(losses))
+            self._last_budget_f2f_loss_parts = {
+                "selected_route": "sandwich",
+                "sandwich_routes": route_logs,
+                "L_total": float(loss.detach().cpu()),
+                "stage_count": float(len(out.get("chain_resolutions") or [])),
+                "loss_scale": "raw_physical_scale",
+                "loss_mask_scale": "raw_physical_scale",
+                "rescale_pair_enabled": True,
+                "lambda_budget": 0.0,
+            }
             return loss
 
+        lam_im = (
+            0.0
+            if self.budget_training_phase == "supernet"
+            else float(self.lambda_imitation)
+        )
+        lam_bud = (
+            0.0
+            if self.budget_training_phase in {"supernet", "planner"}
+            else float(self.lambda_budget)
+        )
+        # Prefer feasibility-masked logits for CE.
+        route_logits = out.get("masked_route_logits")
+        if route_logits is None:
+            route_logits = out.get("route_logits")
         parts = dynamic_fair_total_loss(
             final_pred=out["pred"],
             full_target=real_value,
             chain_preds=list(out["chain_preds"]),
             chain_resolutions=list(out.get("chain_resolutions") or self.chain_lengths),
-            route_logits=out.get("route_logits"),
+            route_logits=route_logits,
             oracle_route_id=out.get("oracle_route_id"),
-            selected_cost=out.get("selected_cost"),
+            expected_cost=out.get("expected_cost"),
             budget=out.get("budget"),
             null_val=self.null_val,
             rescale_pair=self._rescale_pair,
+            lambda_mid=float(self.lambda_mid),
+            lambda_imitation=lam_im,
+            lambda_budget=lam_bud,
         )
         loss = parts["loss"]
         self._last_budget_f2f_loss_parts = {
@@ -808,6 +1002,9 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
             optim_param = (
                 train_cfg.get("OPTIM", {}).get("PARAM", {}) if hasattr(train_cfg, "get") else {}
             )
+            sched_cfg = (
+                train_cfg.get("LR_SCHEDULER", {}) if hasattr(train_cfg, "get") else {}
+            )
             base_lr = float(optim_param.get("lr", 0.002))
             backbone_lr = float(param.get("backbone_lr", base_lr * 0.1))
             planner_lr = float(param.get("planner_lr", base_lr))
@@ -832,10 +1029,26 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
                     k: v for k, v in dict(optim_param).items() if k != "lr"
                 }
                 self.optim = torch.optim.Adam(groups, **opt_kwargs)
+                # Rebuild LR scheduler bound to the new optimizer.
+                if sched_cfg and hasattr(self, "scheduler"):
+                    sched_type = str(sched_cfg.get("TYPE", "MultiStepLR"))
+                    sched_param = dict(sched_cfg.get("PARAM", {}) or {})
+                    sched_cls = getattr(torch.optim.lr_scheduler, sched_type, None)
+                    if sched_cls is None:
+                        raise ValueError(f"Unknown LR scheduler type: {sched_type}")
+                    self.scheduler = sched_cls(self.optim, **sched_param)
                 self.logger.info(
-                    "[budget_f2f joint] rebuilt Adam: backbone_lr=%s planner_lr=%s",
+                    "[budget_f2f joint] rebuilt Adam+scheduler: "
+                    "backbone_lr=%s planner_lr=%s "
+                    "optim_id=%s scheduler_optim_id=%s "
+                    "param_group_counts=%s",
                     backbone_lr,
                     planner_lr,
+                    id(self.optim),
+                    id(getattr(self.scheduler, "optimizer", None))
+                    if hasattr(self, "scheduler")
+                    else None,
+                    [len(g["params"]) for g in self.optim.param_groups],
                 )
 
     def _setup_stagewise_training(self, cfg: dict) -> None:
@@ -950,7 +1163,10 @@ class ChainForecastingRunner(SimpleTimeSeriesForecastingRunner):
         iter_num = (epoch - 1) * self.iter_per_epoch + iter_index
         forward_return = list(self.forward(data=data, epoch=epoch, iter_num=iter_num, train=True))
 
-        future_data, _ = data
+        if isinstance(data, (list, tuple)) and len(data) >= 1:
+            future_data = data[0]
+        else:
+            raise ValueError(f"Unsupported train batch type: {type(data)}")
         future_data = self.to_running_device(future_data)
         real_value = self.select_target_features(future_data)
         out = self._last_chain_out

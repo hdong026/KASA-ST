@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import torch
+
 
 def default_candidate_routes(horizon: int) -> list[list[int]]:
     """Generate the controlled route pool for horizon H.
@@ -98,6 +100,16 @@ def budget_from_intensity(eta: float, costs: list[float]) -> float:
     return float(c_min + eta * (c_max - c_min))
 
 
+def budgets_from_intensity_tensor(
+    etas: torch.Tensor,
+    costs: list[float],
+) -> torch.Tensor:
+    """Vectorized budget mapping for per-sample intensities."""
+    c_min = min(costs)
+    c_max = max(costs)
+    return c_min + etas * (c_max - c_min)
+
+
 def load_route_costs(
     path: str | Path | None,
     routes: list[list[int]],
@@ -167,11 +179,23 @@ def build_run_signature(
     route_cost_file: str | None = None,
     run_tag: str | None = None,
     code_version: str | None = None,
+    num_epochs: int | None = None,
+    planner_lr: float | None = None,
+    backbone_lr: float | None = None,
+    lambda_mid: float | None = None,
+    lambda_imitation: float | None = None,
+    lambda_budget: float | None = None,
+    planner_training_intensities: list[float] | None = None,
 ) -> dict[str, Any]:
     """Full experiment identity; used for paths, skip, and result rows."""
     import hashlib
 
     fr_tag = forced_route_tag(forced_route)
+    eta_train = (
+        "+".join(f"{float(x):.2f}" for x in planner_training_intensities)
+        if planner_training_intensities
+        else "none"
+    )
     sig_parts = [
         f"ds={dataset}",
         f"H={int(horizon)}",
@@ -187,6 +211,13 @@ def build_run_signature(
         f"cost={route_cost_type}",
         f"cost_file={Path(route_cost_file).name if route_cost_file else 'none'}",
         f"code={code_version or 'unknown'}",
+        f"epochs={num_epochs if num_epochs is not None else 'default'}",
+        f"plr={planner_lr if planner_lr is not None else 'default'}",
+        f"blr={backbone_lr if backbone_lr is not None else 'default'}",
+        f"lmid={lambda_mid if lambda_mid is not None else 'default'}",
+        f"lim={lambda_imitation if lambda_imitation is not None else 'default'}",
+        f"lbud={lambda_budget if lambda_budget is not None else 'default'}",
+        f"train_etas={eta_train}",
     ]
     if run_tag:
         sig_parts.append(f"tag={run_tag}")

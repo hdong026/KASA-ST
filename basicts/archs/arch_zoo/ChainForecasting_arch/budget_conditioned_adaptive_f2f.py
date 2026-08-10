@@ -17,6 +17,7 @@ from basicts.archs.arch_zoo.ChainForecasting_arch.budget_route_planner import (
 )
 from basicts.archs.arch_zoo.ChainForecasting_arch.budget_route_utils import (
     budget_from_intensity,
+    budgets_from_intensity_tensor,
     default_candidate_routes,
     load_route_costs,
     parse_candidate_routes,
@@ -86,6 +87,7 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
             "route_cost_file",
             "inference_intensity",
             "planner_hidden_dim",
+            "planner_training_intensities",
             "training_phase",
             "loss_mode",
             "route_sampling",
@@ -96,6 +98,10 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
             "init_checkpoint",
             "backbone_lr",
             "planner_lr",
+            "num_epochs",
+            "lambda_mid",
+            "lambda_imitation",
+            "lambda_budget",
             "chain_loss_mode",
             "chain_loss_weights",
             "model_arch",
@@ -192,19 +198,43 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
             raise ValueError(f"Unknown training_phase: {phase}")
         self.training_phase = phase
 
-    def _budget(self, batch: int, device, dtype) -> torch.Tensor:
-        bval = budget_from_intensity(self.inference_intensity, self.route_costs.tolist())
+    def _budget(
+        self,
+        batch: int,
+        device,
+        dtype,
+        intensity_override: float | torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        costs = self.route_costs.tolist()
+        if intensity_override is None:
+            bval = budget_from_intensity(self.inference_intensity, costs)
+            return torch.full((batch,), bval, device=device, dtype=dtype)
+        if torch.is_tensor(intensity_override):
+            etas = intensity_override.to(device=device, dtype=dtype)
+            if etas.ndim == 0:
+                etas = etas.reshape(1).expand(batch)
+            elif etas.numel() == 1:
+                etas = etas.reshape(1).expand(batch)
+            elif etas.shape[0] != batch:
+                raise ValueError(
+                    f"intensity_override batch {etas.shape[0]} != history batch {batch}"
+                )
+            return budgets_from_intensity_tensor(etas.reshape(-1), costs).to(
+                device=device, dtype=dtype
+            )
+        bval = budget_from_intensity(float(intensity_override), costs)
         return torch.full((batch,), bval, device=device, dtype=dtype)
 
     def _select_route_id(
         self,
         history: torch.Tensor,
         train: bool,
+        intensity_override: float | torch.Tensor | None = None,
     ) -> dict[str, Any]:
         b = history.shape[0]
         device = history.device
         dtype = history.dtype
-        budget = self._budget(b, device, dtype)
+        budget = self._budget(b, device, dtype, intensity_override=intensity_override)
 
         if self.forced_route is not None or self.route_selection_mode == "forced":
             if self.forced_route is None:
@@ -213,42 +243,116 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
             selected = torch.full((b,), rid, device=device, dtype=torch.long)
             costs = self.route_costs.to(device=device, dtype=dtype)
             return {
-                "route_logits": torch.zeros(b, len(self.candidate_routes), device=device, dtype=dtype),
-                "route_probs": F.one_hot(selected, num_classes=len(self.candidate_routes)).to(dtype),
+                "route_logits": torch.zeros(
+                    b, len(self.candidate_routes), device=device, dtype=dtype
+                ),
+                "masked_route_logits": torch.zeros(
+                    b, len(self.candidate_routes), device=device, dtype=dtype
+                ),
+                "route_probs": F.one_hot(
+                    selected, num_classes=len(self.candidate_routes)
+                ).to(dtype),
                 "feasible_mask": torch.ones(
                     b, len(self.candidate_routes), device=device, dtype=torch.bool
                 ),
                 "selected_route_id": selected,
                 "selected_cost": costs[rid].expand(b),
+                "expected_cost": costs[rid].expand(b),
                 "budget": budget,
                 "batch_route_id": rid,
+                "batch_route_logits": torch.zeros(
+                    len(self.candidate_routes), device=device, dtype=dtype
+                ),
             }
 
+        intensity = (
+            self.inference_intensity
+            if intensity_override is None
+            else intensity_override
+        )
         plan = self.planner(
             history,
-            intensity=self.inference_intensity,
+            intensity=intensity,
             route_costs=self.route_costs,
             budget=budget,
             deterministic=not train or self.training_phase == "eval",
         )
-        if self.route_granularity == "batch" or self.route_selection_mode == "batch":
-            # Shared route for the whole batch: majority vote of sample decisions.
-            # Note: converting the discrete route id to a Python int for ModuleList
-            # indexing requires one host read; sandwich / forced / oracle paths
-            # avoid this by supplying CPU-side route lists.
-            ids = plan["selected_route_id"]
-            counts = torch.bincount(ids, minlength=len(self.candidate_routes))
-            batch_id = int(counts.argmax().item())
+        costs = self.route_costs.to(device=device, dtype=dtype)
+        batch_mode = (
+            self.route_granularity == "batch" or self.route_selection_mode == "batch"
+        )
+        if batch_mode:
+            mean_masked_logits = plan["masked_route_logits"].mean(dim=0)
+            mean_budget = budget.mean()
+            feasible_batch = costs <= mean_budget
+            cheapest = int(costs.argmin().item())
+            feasible_batch = feasible_batch | F.one_hot(
+                torch.tensor(cheapest, device=device),
+                num_classes=len(self.candidate_routes),
+            ).bool()
+            batch_masked = mean_masked_logits.masked_fill(~feasible_batch, -1e9)
+            batch_id = int(batch_masked.argmax().item())
             plan["batch_route_id"] = batch_id
+            plan["batch_route_logits"] = mean_masked_logits
             plan["selected_route_id"] = torch.full(
                 (b,), batch_id, device=device, dtype=torch.long
             )
-            plan["selected_cost"] = self.route_costs.to(device=device, dtype=dtype)[
-                batch_id
-            ].expand(b)
+            plan["selected_cost"] = costs[batch_id].expand(b)
         else:
-            plan["batch_route_id"] = int(plan["selected_route_id"][0].item())
+            plan["batch_route_id"] = None
+            plan["batch_route_logits"] = None
         return plan
+
+    def _execute_routes_bucketed(
+        self,
+        history: torch.Tensor,
+        route_ids: torch.Tensor,
+    ) -> dict[str, Any]:
+        """Execute per-sample routes by grouping indices with the same route id."""
+        b = history.shape[0]
+        device = history.device
+        dtype = history.dtype
+        executed_route_id = route_ids.long().view(-1)
+        if executed_route_id.shape[0] != b:
+            raise ValueError(
+                f"route_ids batch {executed_route_id.shape[0]} != history batch {b}"
+            )
+
+        costs = self.route_costs.to(device=device, dtype=dtype)
+        selected_cost = costs.gather(0, executed_route_id)
+        unique_ids = executed_route_id.unique().tolist()
+
+        if len(unique_ids) == 1:
+            rid = int(unique_ids[0])
+            route = list(self.candidate_routes[rid])
+            out = self._execute_route(history, route)
+            return {
+                "pred": out["pred"],
+                "chain_preds": out["chain_preds"],
+                "chain_resolutions": out["chain_resolutions"],
+                "executed_route_id": executed_route_id,
+                "selected_cost": selected_cost,
+                "executed_routes": [route],
+            }
+
+        pred = history.new_zeros(b, self.output_len, self.node_size, self.output_dim)
+        executed_routes: list[list[int]] = []
+        for rid in unique_ids:
+            rid = int(rid)
+            route = list(self.candidate_routes[rid])
+            executed_routes.append(route)
+            idx = (executed_route_id == rid).nonzero(as_tuple=True)[0]
+            sub = self._execute_route(history[idx], route)
+            pred[idx] = sub["pred"]
+
+        return {
+            "pred": pred,
+            "chain_preds": [pred],
+            "chain_resolutions": [self.output_len],
+            "executed_route_id": executed_route_id,
+            "selected_cost": selected_cost,
+            "executed_routes": executed_routes,
+        }
 
     def _spatial_index_for_resolution(self, res: int) -> int:
         """Map temporal resolution to progressive spatial module by capacity tier."""
@@ -400,15 +504,16 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
         return_intermediates: bool = False,
         sandwich_routes: list[list[int]] | None = None,
         oracle_route_id: torch.Tensor | None = None,
+        inference_intensity_override: float | torch.Tensor | None = None,
+        sample_indices: torch.Tensor | None = None,
         **kwargs,
     ):
-        del batch_seen, epoch, kwargs
+        del batch_seen, epoch, kwargs, future_data, sample_indices
         history = history_data
         b = history.shape[0]
         device = history.device
         dtype = history.dtype
 
-        # Forced mode must dominate sandwich / random sampling.
         forced_active = (
             self.forced_route is not None or self.route_selection_mode == "forced"
         )
@@ -418,86 +523,172 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
                 "forced must override sandwich/random sampling"
             )
 
-        # Supernet sandwich: execute provided routes (caller accumulates loss)
         if sandwich_routes is not None and not forced_active:
             outs = []
             for route in sandwich_routes:
                 validate_route(route, horizon=self.output_len)
                 outs.append(self._execute_route(history, route))
-            # Primary pred = last route's final (typically full chain)
-            primary = outs[-1]
+            max_route = max(sandwich_routes, key=lambda r: (len(r), sum(r)))
+            primary = next(
+                out
+                for route, out in zip(sandwich_routes, outs)
+                if list(route) == list(max_route)
+            )
+            max_rid = self.candidate_routes.index(list(max_route))
             result = {
                 "pred": primary["pred"],
                 "prediction": primary["pred"],
                 "chain_preds": primary["chain_preds"],
                 "chain_resolutions": primary["chain_resolutions"],
                 "sandwich_outputs": outs,
-                "selected_route": primary["chain_resolutions"],
-                "selected_route_id": torch.tensor(
-                    [self.candidate_routes.index(primary["chain_resolutions"])],
-                    device=device,
-                ).expand(b),
+                "selected_route": list(max_route),
+                "selected_route_id": torch.full(
+                    (b,), max_rid, device=device, dtype=torch.long
+                ),
+                "executed_route_id": torch.full(
+                    (b,), max_rid, device=device, dtype=torch.long
+                ),
                 "route_logits": None,
+                "masked_route_logits": None,
                 "route_probs": None,
-                "selected_cost": self.route_costs[
-                    self.candidate_routes.index(primary["chain_resolutions"])
-                ].to(device=device, dtype=dtype).expand(b),
-                "budget": self._budget(b, device, dtype),
+                "expected_cost": None,
+                "selected_cost": self.route_costs[max_rid].to(
+                    device=device, dtype=dtype
+                ).expand(b),
+                "budget": self._budget(
+                    b, device, dtype, intensity_override=inference_intensity_override
+                ),
                 "diagnostics": {"mode": "sandwich"},
             }
             if return_all or return_intermediates:
                 return result
             return result["pred"]
 
-        # Planner phase: always score routes, but execute oracle / forced labels
-        # so the discrete route does not rely on STE for forecasting loss.
-        plan = self._select_route_id(history, train=train)
         if (
+            train
+            and self.training_phase == "joint"
+            and self.route_granularity == "sample"
+            and not forced_active
+        ):
+            raise RuntimeError(
+                "joint training with sample route granularity is not supported "
+                "for forecasting; use batch granularity or planner-only phase"
+            )
+
+        plan = self._select_route_id(
+            history,
+            train=train,
+            intensity_override=inference_intensity_override,
+        )
+
+        if (
+            self.training_phase == "planner"
+            and oracle_route_id is not None
+            and not forced_active
+        ):
+            oracle = oracle_route_id.long().view(-1)
+            if oracle.numel() == 1 and b > 1:
+                oracle = oracle.expand(b)
+            elif oracle.numel() != b:
+                raise ValueError(
+                    f"oracle_route_id size {oracle.numel()} != batch {b}"
+                )
+            feas = plan["feasible_mask"]
+            for bi in range(b):
+                if not bool(feas[bi, oracle[bi]].item()):
+                    raise RuntimeError(
+                        f"oracle route {int(oracle[bi].item())} infeasible for "
+                        f"sample {bi} under budget {float(plan['budget'][bi].item())}"
+                    )
+            dummy_pred = history.new_zeros(
+                b, self.output_len, self.node_size, self.output_dim
+            )
+            result = {
+                "pred": dummy_pred,
+                "prediction": dummy_pred,
+                "planner_only": True,
+                "route_logits": plan["route_logits"],
+                "masked_route_logits": plan["masked_route_logits"],
+                "route_probs": plan["route_probs"],
+                "feasible_mask": plan["feasible_mask"],
+                "oracle_route_id": oracle.to(device=device),
+                "expected_cost": plan["expected_cost"],
+                "selected_cost": plan["selected_cost"],
+                "budget": plan["budget"],
+                "selected_route_id": plan["selected_route_id"],
+                "executed_route_id": oracle.to(device=device),
+                "chain_preds": [dummy_pred],
+                "chain_resolutions": [self.output_len],
+                "candidate_routes": self.candidate_routes,
+                "route_costs": self.route_costs,
+                "inference_intensity": self.inference_intensity,
+                "training_phase": self.training_phase,
+                "loss_mode": self.loss_mode,
+                "diagnostics": {"mode": "planner_only"},
+            }
+            if plan.get("batch_route_logits") is not None:
+                result["batch_route_logits"] = plan["batch_route_logits"]
+            if return_all or return_intermediates:
+                return result
+            return result["pred"]
+
+        use_oracle_exec = (
             oracle_route_id is not None
             and self.training_phase in {"planner", "joint"}
-            and self.forced_route is None
-            and self.route_selection_mode != "forced"
-        ):
-            # Batch shared oracle: use mode of provided labels (CPU-side ints).
-            if oracle_route_id.ndim == 0:
-                rid = int(oracle_route_id.item())
-            else:
-                counts = torch.bincount(
-                    oracle_route_id.long().view(-1),
-                    minlength=len(self.candidate_routes),
+            and not forced_active
+        )
+        batch_mode = (
+            self.route_granularity == "batch" or self.route_selection_mode == "batch"
+        )
+
+        if use_oracle_exec:
+            exec_ids = oracle_route_id.long().view(-1)
+            if exec_ids.numel() == 1 and b > 1:
+                exec_ids = exec_ids.expand(b)
+            elif exec_ids.numel() != b:
+                raise ValueError(
+                    f"oracle_route_id size {exec_ids.numel()} != batch {b}"
                 )
-                rid = int(counts.argmax().item())
-            route = list(self.candidate_routes[rid])
-            plan["selected_route_id"] = torch.full(
-                (b,), rid, device=device, dtype=torch.long
-            )
-            plan["selected_cost"] = self.route_costs.to(device=device, dtype=dtype)[
+            executed = self._execute_routes_bucketed(history, exec_ids)
+            route_repr = list(self.candidate_routes[int(exec_ids[0].item())])
+        elif batch_mode:
+            rid = int(plan["batch_route_id"])
+            route_repr = list(self.candidate_routes[rid])
+            executed = self._execute_route(history, route_repr)
+            exec_ids = torch.full((b,), rid, device=device, dtype=torch.long)
+            executed["executed_route_id"] = exec_ids
+            executed["selected_cost"] = self.route_costs.to(device=device, dtype=dtype)[
                 rid
             ].expand(b)
-            plan["batch_route_id"] = rid
+            executed["executed_routes"] = [route_repr]
         else:
-            rid = int(plan["batch_route_id"])
-            route = list(self.candidate_routes[rid])
-        executed = self._execute_route(history, route)
+            exec_ids = plan["selected_route_id"]
+            executed = self._execute_routes_bucketed(history, exec_ids)
+            route_repr = list(
+                self.candidate_routes[int(exec_ids[0].item())]
+            )
 
-        # Forced-route hard assertions (never silently diverge).
         if forced_active:
             if self.forced_route is None:
                 raise RuntimeError("forced mode requires forced_route")
-            if list(route) != list(self.forced_route):
+            forced_rid = self.candidate_routes.index(self.forced_route)
+            if not torch.all(exec_ids == forced_rid):
                 raise RuntimeError(
-                    f"selected_route {route} != forced_route {self.forced_route}"
+                    f"executed_route_id {exec_ids.tolist()} != forced route id {forced_rid}"
                 )
+            route_repr = list(self.forced_route)
             if list(executed["chain_resolutions"]) != list(self.forced_route):
-                raise RuntimeError(
-                    f"chain_resolutions {executed['chain_resolutions']} "
-                    f"!= forced_route {self.forced_route}"
-                )
-            if len(executed["chain_resolutions"]) != len(self.forced_route):
-                raise RuntimeError(
-                    f"actual_stage_count {len(executed['chain_resolutions'])} "
-                    f"!= len(forced_route) {len(self.forced_route)}"
-                )
+                if len(executed.get("executed_routes", [])) == 1:
+                    if list(executed["executed_routes"][0]) != list(self.forced_route):
+                        raise RuntimeError(
+                            f"chain_resolutions {executed['chain_resolutions']} "
+                            f"!= forced_route {self.forced_route}"
+                        )
+                elif list(executed["chain_resolutions"]) != [self.output_len]:
+                    raise RuntimeError(
+                        f"chain_resolutions {executed['chain_resolutions']} "
+                        f"!= forced_route {self.forced_route}"
+                    )
             if executed["pred"].shape[1] != self.output_len:
                 raise RuntimeError(
                     f"final forecast length {executed['pred'].shape[1]} "
@@ -506,7 +697,7 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
             if not self._logged:
                 print(
                     "[budget_f2f forced] "
-                    f"executed_routes={[list(route)]} "
+                    f"executed_routes={[list(route_repr)]} "
                     f"chain_resolutions={list(executed['chain_resolutions'])} "
                     f"actual_stage_count={len(executed['chain_resolutions'])}"
                 )
@@ -518,13 +709,18 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
             "chain_preds": executed["chain_preds"],
             "chain_resolutions": executed["chain_resolutions"],
             "selected_route_id": plan["selected_route_id"],
-            "selected_route": route,
+            "executed_route_id": executed["executed_route_id"],
+            "selected_route": route_repr,
             "actual_stage_count": len(executed["chain_resolutions"]),
-            "executed_routes": [list(route)],
+            "executed_routes": executed.get(
+                "executed_routes", [list(route_repr)]
+            ),
             "route_logits": plan["route_logits"],
+            "masked_route_logits": plan["masked_route_logits"],
             "route_probs": plan["route_probs"],
             "feasible_mask": plan["feasible_mask"],
-            "selected_cost": plan["selected_cost"],
+            "selected_cost": executed["selected_cost"],
+            "expected_cost": plan["expected_cost"],
             "budget": plan["budget"],
             "candidate_routes": self.candidate_routes,
             "route_costs": self.route_costs,
@@ -532,12 +728,14 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
             "training_phase": self.training_phase,
             "loss_mode": self.loss_mode,
             "diagnostics": {
-                "stage_count": len(route),
-                "batch_route_id": rid,
+                "stage_count": len(route_repr),
+                "batch_route_id": plan.get("batch_route_id"),
                 "node_size": self.node_size,
                 "mode": "forced" if forced_active else "planned",
             },
         }
+        if plan.get("batch_route_logits") is not None:
+            result["batch_route_logits"] = plan["batch_route_logits"]
         if oracle_route_id is not None:
             result["oracle_route_id"] = oracle_route_id.to(device=device)
         if return_all or return_intermediates:

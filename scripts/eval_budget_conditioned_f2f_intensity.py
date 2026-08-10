@@ -178,7 +178,9 @@ def evaluate_loader(
             preds.append(pred.detach().cpu())
             tgts.append(y.detach().cpu())
 
-            rid = out["selected_route_id"].detach().cpu().view(-1)
+            # Prefer actually executed routes for sample histogram.
+            exec_ids = out.get("executed_route_id", out["selected_route_id"])
+            rid = exec_ids.detach().cpu().view(-1)
             sample_route_ids.extend(int(x) for x in rid.tolist())
             batch_id = out.get("batch_route_id")
             if batch_id is None:

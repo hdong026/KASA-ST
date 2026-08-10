@@ -57,8 +57,8 @@ def baseline_compatible_token_mae(
     )
 
 
-def budget_violation(selected_cost: torch.Tensor, budget: torch.Tensor) -> torch.Tensor:
-    return F.relu(selected_cost - budget).mean()
+def budget_violation(expected_cost: torch.Tensor, budget: torch.Tensor) -> torch.Tensor:
+    return F.relu(expected_cost - budget).mean()
 
 
 def route_ce_loss(
@@ -84,6 +84,29 @@ def route_ce_loss(
     return F.cross_entropy(route_logits, labels)
 
 
+def planner_imitation_loss(
+    route_logits_masked: torch.Tensor | None,
+    oracle: torch.Tensor | None,
+    expected_cost: torch.Tensor | None,
+    budget: torch.Tensor | None,
+    lambda_imitation: float = 1.0,
+    lambda_budget: float = 0.0,
+) -> dict[str, torch.Tensor]:
+    ref = expected_cost if expected_cost is not None else route_logits_masked
+    l_ce = route_ce_loss(route_logits_masked, oracle, reference=ref)
+    if expected_cost is None or budget is None or float(lambda_budget) == 0.0:
+        l_bud = l_ce.new_zeros(())
+    else:
+        l_bud = budget_violation(expected_cost, budget)
+    total = float(lambda_imitation) * l_ce + float(lambda_budget) * l_bud
+    return {
+        "loss": total,
+        "L_total": total.detach(),
+        "L_route_ce": l_ce.detach(),
+        "L_budget": l_bud.detach() if torch.is_tensor(l_bud) else l_bud,
+    }
+
+
 def dynamic_fair_total_loss(
     final_pred: torch.Tensor,
     full_target: torch.Tensor,
@@ -92,10 +115,11 @@ def dynamic_fair_total_loss(
     route_logits: torch.Tensor | None = None,
     oracle_route_id: torch.Tensor | None = None,
     selected_cost: torch.Tensor | None = None,
+    expected_cost: torch.Tensor | None = None,
     budget: torch.Tensor | None = None,
     lambda_mid: float = 1.0,
     lambda_imitation: float = 1.0,
-    lambda_budget: float = 0.1,
+    lambda_budget: float = 0.0,
     null_val: float = 0.0,
     rescale_pair: RescalePair = None,
 ) -> dict[str, torch.Tensor]:
@@ -114,10 +138,11 @@ def dynamic_fair_total_loss(
         rescale_pair=rescale_pair,
     )
     l_ce = route_ce_loss(route_logits, oracle_route_id, reference=final_pred)
-    if selected_cost is None or budget is None:
+    cost_for_budget = expected_cost if expected_cost is not None else selected_cost
+    if cost_for_budget is None or budget is None:
         l_bud = final_pred.new_zeros(())
     else:
-        l_bud = budget_violation(selected_cost, budget)
+        l_bud = budget_violation(cost_for_budget, budget)
     total = (
         l_final
         + float(lambda_mid) * l_mid

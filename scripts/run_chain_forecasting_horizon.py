@@ -330,6 +330,10 @@ VARIANT_SPECS: dict[str, dict] = {
         "route_sampling": "sandwich",
         "loss_mode": "dynamic_fair",
         "freeze_forecasting_backbone": False,
+        "planner_training_intensities": [0.0, 0.25, 0.5, 0.75, 1.0],
+        "lambda_mid": 1.0,
+        "lambda_imitation": 1.0,
+        "lambda_budget": 0.0,
         "use_prev_condition": True,
         "spatial_placement": "interleaved_progressive",
         "progressive_spatial_ratios": [0.25, 0.5, 1.0],
@@ -513,7 +517,7 @@ def _py_literal(v) -> str:
     return str(v)
 
 
-_META_SPEC_KEYS = {"is_chain", "model_name", "model_arch"}
+_META_SPEC_KEYS = {"is_chain", "model_name", "model_arch", "num_epochs"}
 
 
 def generate_temp_config(horizon: int, variant: str, seed: int) -> Path:
@@ -582,6 +586,13 @@ def generate_temp_config(horizon: int, variant: str, seed: int) -> Path:
         lines.append("CFG.MODEL.ARCH = BudgetConditionedAdaptiveF2FNet")
         # Supernet builds chain_lengths from candidate routes internally.
         lines.append('CFG.MODEL.PARAM.pop("chain_lengths", None)')
+        # Indexed dataset returns (future, history, sample_index) for oracle lookup.
+        lines.append(
+            "from basicts.data import IndexedTimeSeriesForecastingDataset"
+        )
+        lines.append("CFG.DATASET_CLS = IndexedTimeSeriesForecastingDataset")
+        if spec.get("num_epochs") is not None:
+            lines.append(f"CFG.TRAIN.NUM_EPOCHS = {int(spec['num_epochs'])}")
         # Prefer easytorch FINETUNE_FROM when init_checkpoint is set.
         if spec.get("init_checkpoint"):
             lines.append(

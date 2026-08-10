@@ -484,6 +484,13 @@ def build_jobs(args) -> list[dict]:
                 route_cost_file=args.route_cost_file,
                 run_tag=args.run_tag,
                 code_version=code_ver,
+                num_epochs=args.num_epochs,
+                planner_lr=args.planner_lr,
+                backbone_lr=args.backbone_lr,
+                lambda_mid=args.lambda_mid,
+                lambda_imitation=args.lambda_imitation,
+                lambda_budget=args.lambda_budget,
+                planner_training_intensities=list(args.planner_training_intensities),
             )
             experiment_tag = meta_sig["experiment_tag"]
             unique = unique_variant_key(experiment_tag)
@@ -502,6 +509,18 @@ def build_jobs(args) -> list[dict]:
                 "none" if forced is not None else args.route_sampling
             )
             spec["freeze_forecasting_backbone"] = bool(args.freeze_forecasting_backbone)
+            spec["planner_training_intensities"] = list(
+                args.planner_training_intensities
+            )
+            spec["lambda_mid"] = float(args.lambda_mid)
+            spec["lambda_imitation"] = float(args.lambda_imitation)
+            spec["lambda_budget"] = float(args.lambda_budget)
+            if args.planner_lr is not None:
+                spec["planner_lr"] = float(args.planner_lr)
+            if args.backbone_lr is not None:
+                spec["backbone_lr"] = float(args.backbone_lr)
+            if args.num_epochs is not None:
+                spec["num_epochs"] = int(args.num_epochs)
             spec["run_signature"] = meta_sig["run_signature"]
             spec["experiment_tag"] = experiment_tag
             if args.route_cost_file:
@@ -608,6 +627,18 @@ def main() -> int:
     parser.add_argument("--oracle-file", default=None)
     parser.add_argument("--init-checkpoint", default=None)
     parser.add_argument("--freeze-forecasting-backbone", action="store_true")
+    parser.add_argument("--num-epochs", type=int, default=None)
+    parser.add_argument("--planner-lr", type=float, default=None)
+    parser.add_argument("--backbone-lr", type=float, default=None)
+    parser.add_argument("--lambda-mid", type=float, default=1.0)
+    parser.add_argument("--lambda-imitation", type=float, default=1.0)
+    parser.add_argument("--lambda-budget", type=float, default=0.0)
+    parser.add_argument(
+        "--planner-training-intensities",
+        nargs="+",
+        type=float,
+        default=[0.0, 0.25, 0.5, 0.75, 1.0],
+    )
     parser.add_argument(
         "--loss-mode",
         default="dynamic_fair",

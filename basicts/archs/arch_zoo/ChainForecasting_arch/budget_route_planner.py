@@ -105,6 +105,7 @@ class BudgetRoutePlanner(nn.Module):
 
         masked_logits = logits.masked_fill(~feasible, -1e9)
         probs = F.softmax(masked_logits, dim=-1)
+        expected_cost = (probs * costs).sum(-1)
         if deterministic:
             selected = masked_logits.argmax(dim=-1)
         else:
@@ -114,10 +115,12 @@ class BudgetRoutePlanner(nn.Module):
         selected_cost = costs.gather(1, selected.unsqueeze(-1)).squeeze(-1)
         return {
             "route_logits": logits,
+            "masked_route_logits": masked_logits,
             "route_probs": probs,
             "feasible_mask": feasible,
             "selected_route_id": selected,
             "selected_cost": selected_cost,
+            "expected_cost": expected_cost,
             "budget": bud,
             "features": feats,
         }
