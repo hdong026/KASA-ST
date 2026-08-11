@@ -36,14 +36,26 @@ def dedupe_route_loss_records(
     if routes is None:
         raise ValueError("oracle metadata missing candidate_routes")
     routes = [[int(x) for x in r] for r in routes]
-    costs = [float(x) for x in meta.get("route_costs", [])]
+    costs = [float(x) for x in (meta.get("route_costs") or [])]
+    # Defensive fallback for older/partial merges that omitted route_costs.
+    if not costs and records and isinstance(records[0].get("route_final_losses"), list):
+        try:
+            costs = [float(e["cost"]) for e in records[0]["route_final_losses"]]
+            meta = dict(meta)
+            meta["route_costs"] = costs
+        except Exception:
+            costs = []
     if expected_routes is not None and routes != [[int(x) for x in r] for r in expected_routes]:
         raise RuntimeError(
             f"oracle route order mismatch: got {routes}, expected {expected_routes}"
         )
     if expected_costs is not None:
         if len(costs) != len(expected_costs):
-            raise RuntimeError("oracle route_costs length mismatch")
+            raise RuntimeError(
+                f"oracle route_costs length mismatch: "
+                f"oracle_len={len(costs)} expected_len={len(expected_costs)} "
+                f"oracle_costs={costs}"
+            )
         for a, b in zip(costs, expected_costs):
             if abs(float(a) - float(b)) > atol:
                 raise RuntimeError(

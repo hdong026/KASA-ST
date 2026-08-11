@@ -425,13 +425,25 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
         history_data: torch.Tensor,
         route: list[int],
         return_trace: bool = False,
+        init_prev_forecast: torch.Tensor | None = None,
+        allow_prefix: bool = False,
     ) -> dict[str, Any]:
-        """Run KASA stages for ``route`` using shared supernet modules."""
+        """Run KASA stages for ``route`` using shared supernet modules.
+
+        ``init_prev_forecast`` enables sequential resume: pass the last forecast
+        state from a prefix execution so a suffix route continues conditioning
+        without re-running earlier stages. Default ``None`` preserves original
+        full-route semantics.
+
+        ``allow_prefix=True`` permits routes whose last resolution is not H
+        (Plan B quarter-prefix only). Default ``False`` keeps the original
+        final-length == H assertion for all full terminal routes.
+        """
         chain_preds: list[torch.Tensor] = []
         temporal_preds: list[torch.Tensor] = []
         conditions: list[torch.Tensor | None] = []
         spatial_cfgs: list[dict[str, Any]] = []
-        prev_forecast = None
+        prev_forecast = init_prev_forecast
         bb = self.backbone
         spatial_codebook = bb._spatial_codebook()
 
@@ -535,7 +547,7 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
         if not chain_preds:
             raise RuntimeError("empty route execution")
         final = chain_preds[-1]
-        if final.shape[1] != self.output_len:
+        if (not allow_prefix) and final.shape[1] != self.output_len:
             raise RuntimeError(
                 f"final stage length {final.shape[1]} != H={self.output_len}"
             )
@@ -793,6 +805,16 @@ class BudgetConditionedAdaptiveF2FNet(nn.Module):
                 "mode": "forced" if forced_active else "planned",
             },
         }
+        # Pass through planner/controller extras once (avoid double forward in subclasses).
+        for extra_key in (
+            "predicted_gains",
+            "route_scores",
+            "near_best_mask",
+            "proposed_route_id",
+            "predicted_route_losses",
+        ):
+            if plan.get(extra_key) is not None:
+                result[extra_key] = plan[extra_key]
         if plan.get("batch_route_logits") is not None:
             result["batch_route_logits"] = plan["batch_route_logits"]
         if oracle_route_id is not None:

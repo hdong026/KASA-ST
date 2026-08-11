@@ -75,7 +75,7 @@ def analyze_split(path: Path, delta_abs: float) -> dict:
     scores = route_scores_from_gains(
         g3_t, g6_t, g36_t, index_map=index_map, n_routes=len(routes)
     )
-    pair_w, pair_report = compute_pair_imbalance_weights(scores)
+    pair_w_pos, pair_w_neg, pair_report = compute_pair_imbalance_weights(scores)
 
     # Route-prior baseline: mean train gains applied to every sample (caller may pass)
     mean_gains = gains.mean(dim=0)

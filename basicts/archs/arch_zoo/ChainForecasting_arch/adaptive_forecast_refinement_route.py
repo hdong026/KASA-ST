@@ -274,14 +274,11 @@ class AdaptiveForecastRefinementRouteNet(BudgetConditionedAdaptiveF2FNet):
             inference_intensity_override=inference_intensity_override,
             sample_indices=sample_indices,
         )
-        if isinstance(out, dict) and "predicted_gains" not in out:
-            if out.get("diagnostics", {}).get("mode") != "sandwich":
-                q = self.estimate_refinement_gains(history_data)
-                out["predicted_gains"] = q["predicted_gains"]
-                out["route_scores"] = q["route_scores"]
-                out["proposed_route_id"] = out.get(
-                    "selected_route_id", out.get("executed_route_id")
-                )
+        # Parent now forwards plan extras; do NOT recompute controller.
+        if isinstance(out, dict) and "proposed_route_id" not in out:
+            out["proposed_route_id"] = out.get(
+                "selected_route_id", out.get("executed_route_id")
+            )
         if return_all or return_intermediates:
             return out
         return out["pred"] if isinstance(out, dict) else out

@@ -288,12 +288,30 @@ def main() -> int:
     good = pairwise_route_ranking_loss(st, st, rank_ignore_margin=0.01, rank_temperature=0.05)
     bad = pairwise_route_ranking_loss(-st, st, rank_ignore_margin=0.01, rank_temperature=0.05)
     results.append(_ok("ranking_loss_direction", float(good) < float(bad), f"{float(good)}<{float(bad)}"))
-    pw, pref = compute_pair_imbalance_weights(st)
+    pw_pos, pw_neg, pref = compute_pair_imbalance_weights(st)
     results.append(
         _ok(
             "pair_imbalance_weights_finite",
-            torch.isfinite(pw).all().item() and bool(pref),
-            str(list(pref.items())[:2]),
+            torch.isfinite(pw_pos).all().item()
+            and torch.isfinite(pw_neg).all().item()
+            and bool(pref),
+            str(list(pref.items())[:1]),
+        )
+    )
+    # Sign-specific: minority direction heavier for extreme imbalance
+    extreme = torch.zeros(2, 2)
+    # fabricate scores so pair 0<1 has many pos few neg — use report from real
+    # synthetic counts via repeated scores
+    many = torch.cat(
+        [torch.tensor([[0.0, 1.0]])] * 9750 + [torch.tensor([[1.0, 0.0]])] * 192,
+        dim=0,
+    )
+    wp, wn, rep = compute_pair_imbalance_weights(many, rank_ignore_margin=0.01)
+    results.append(
+        _ok(
+            "sign_specific_minority_heavier",
+            float(wn[1, 0].item()) > float(wp[1, 0].item()),
+            f"w_pos={float(wp[1,0])} w_neg={float(wn[1,0])}",
         )
     )
 

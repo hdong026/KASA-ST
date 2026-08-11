@@ -145,7 +145,9 @@ def _load_supernet(model, ckpt: Path):
 
 
 @torch.no_grad()
-def validate(model, loader, intensities, device, args, pair_weights, mean_train_gains):
+def validate(
+    model, loader, intensities, device, args, pair_weights, mean_train_gains, max_batches=None
+):
     model.eval()
     model.backbone.eval()
     all_pred, all_true, all_losses = [], [], []
@@ -162,6 +164,7 @@ def validate(model, loader, intensities, device, args, pair_weights, mean_train_
     }
     prior_regrets = {str(e): [] for e in intensities}
 
+    n_seen = 0
     for history, _si, gains, losses in loader:
         history = history.to(device)
         gains = gains.to(device)
@@ -207,6 +210,9 @@ def validate(model, loader, intensities, device, args, pair_weights, mean_train_
             bucket["stages"].extend(
                 len(model.candidate_routes[int(i)]) for i in sel.tolist()
             )
+        n_seen += 1
+        if max_batches is not None and n_seen >= int(max_batches):
+            break
 
     pred_cat = torch.cat(all_pred)
     true_cat = torch.cat(all_true)
@@ -332,7 +338,33 @@ def main() -> int:
     parser.add_argument(
         "--val-intensities", type=float, nargs="+", default=[0.0, 0.25, 0.5, 0.75, 1.0]
     )
+    parser.add_argument(
+        "--confirm-full-run",
+        action="store_true",
+        help="Required for full training (safety lock).",
+    )
+    parser.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="Tiny non-scientific code path (epochs/batches/samples capped; ckpt under /tmp).",
+    )
+    parser.add_argument(
+        "--allow-oracle-subset",
+        action="store_true",
+        help="Allow oracle sample count != full TRAIN length (cross-fit / holdout).",
+    )
     args = parser.parse_args()
+
+    if not args.smoke_test and not args.confirm_full_run:
+        raise RuntimeError(
+            "Full training is disabled. Pass --confirm-full-run manually "
+            "(or --smoke-test for a non-scientific code path)."
+        )
+    if args.smoke_test:
+        args.num_epochs = min(int(args.num_epochs), 1)
+        args.batch_size = min(int(args.batch_size), 16)
+        args.out_dir = "/tmp/kasa_refinement_controller_smoke"
+        print("SMOKE TEST ONLY - NOT A SCIENTIFIC RESULT")
 
     _set_seed(int(args.seed))
     device = torch.device(args.device)
@@ -345,6 +377,7 @@ def main() -> int:
 
     data_file = str(Path(args.data_dir) / f"data_in12_out{args.horizon}.pkl")
     index_file = str(Path(args.data_dir) / f"index_in12_out{args.horizon}.pkl")
+    require_len_match = not bool(args.allow_oracle_subset or args.smoke_test)
     train_ds = ForecastRefinementGainDataset(
         IndexedTimeSeriesForecastingDataset(data_file, index_file, "train"),
         args.train_oracle,
@@ -352,6 +385,7 @@ def main() -> int:
         expected_costs=costs,
         expected_horizon=args.horizon,
         expected_dataset="PEMS04",
+        require_len_match=require_len_match,
     )
     valid_ds = ForecastRefinementGainDataset(
         IndexedTimeSeriesForecastingDataset(data_file, index_file, "valid"),
@@ -360,28 +394,43 @@ def main() -> int:
         expected_costs=costs,
         expected_horizon=args.horizon,
         expected_dataset="PEMS04",
+        require_len_match=require_len_match,
     )
-    print(f"[data] train={len(train_ds)} valid={len(valid_ds)} target_scale={train_ds.target_scale}")
+    if args.smoke_test:
+        # Cap samples via Subset of dataset indices (not test).
+        from torch.utils.data import Subset
 
+        n_tr = min(64, len(train_ds))
+        n_va = min(32, len(valid_ds))
+        train_ds = Subset(train_ds, list(range(n_tr)))
+        valid_ds = Subset(valid_ds, list(range(n_va)))
+        # Rebuild gains tensors from underlying dataset for pair weights below.
+        _train_base = train_ds.dataset if isinstance(train_ds, Subset) else train_ds
+    else:
+        _train_base = train_ds
+    print(f"[data] train={len(train_ds)} valid={len(valid_ds)} target_scale={getattr(_train_base, 'target_scale', 'n/a')}")
+
+    nw = 0 if args.smoke_test else 2
     train_loader = DataLoader(
-        train_ds, batch_size=int(args.batch_size), shuffle=True, num_workers=2,
+        train_ds, batch_size=int(args.batch_size), shuffle=True, num_workers=nw,
         collate_fn=collate_refinement_gains,
     )
     valid_loader = DataLoader(
-        valid_ds, batch_size=int(args.batch_size), shuffle=False, num_workers=2,
+        valid_ds, batch_size=int(args.batch_size), shuffle=False, num_workers=nw,
         collate_fn=collate_refinement_gains,
     )
 
-    # Pair imbalance from full train gains
+    # Pair imbalance from train gains (underlying dataset if Subset)
+    _gains_src = _train_base
     all_gains = torch.stack(
-        [torch.tensor(train_ds.gains[i]) for i in train_ds.sample_indices], dim=0
+        [torch.tensor(_gains_src.gains[i]) for i in _gains_src.sample_indices], dim=0
     )
     mean_train_gains = all_gains.mean(dim=0).to(device)
     train_scores = route_scores_from_gains(
         all_gains[:, 0], all_gains[:, 1], all_gains[:, 2],
-        index_map=train_ds.index_map, n_routes=len(routes),
+        index_map=_gains_src.index_map, n_routes=len(routes),
     )
-    pair_weights, pair_report = compute_pair_imbalance_weights(
+    pair_weights_pos, pair_weights_neg, pair_report = compute_pair_imbalance_weights(
         train_scores, rank_ignore_margin=float(args.rank_ignore_margin)
     )
     print("[pair_weights]", json.dumps(pair_report, indent=2))
@@ -408,6 +457,8 @@ def main() -> int:
         model.backbone.eval()
         running = Counter()
         n_batches = 0
+        max_train_batches = 2 if args.smoke_test else None
+        max_valid_batches = 1 if args.smoke_test else None
         for batch_history, _si, gains, _losses in train_loader:
             batch_history = batch_history.to(device)
             gains = gains.to(device)
@@ -425,7 +476,8 @@ def main() -> int:
                 lambda_full=float(args.lambda_full),
                 rank_ignore_margin=float(args.rank_ignore_margin),
                 rank_temperature=float(args.rank_temperature),
-                pair_weights=pair_weights,
+                pair_weights_pos=pair_weights_pos,
+                pair_weights_neg=pair_weights_neg,
             )
             loss.backward()
             for p in model.backbone.parameters():
@@ -435,10 +487,13 @@ def main() -> int:
             for k, v in parts.items():
                 running[k] += v
             n_batches += 1
+            if max_train_batches is not None and n_batches >= max_train_batches:
+                break
         train_parts = {k: running[k] / max(n_batches, 1) for k in running}
         val = validate(
             model, valid_loader, list(args.val_intensities), device, args,
-            pair_weights, mean_train_gains,
+            (pair_weights_pos, pair_weights_neg), mean_train_gains,
+            max_batches=max_valid_batches,
         )
         run_history.append({"epoch": epoch, "train": train_parts, "valid": val})
         print(

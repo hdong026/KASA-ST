@@ -60,6 +60,8 @@ def pairwise_route_ranking_loss(
     rank_ignore_margin: float = 0.02,
     rank_temperature: float = 0.05,
     pair_weights: torch.Tensor | None = None,
+    pair_weights_pos: torch.Tensor | None = None,
+    pair_weights_neg: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Imbalance-aware pairwise ranking on reconstructed route scores."""
     b, r = scores_hat.shape
@@ -80,8 +82,13 @@ def pairwise_route_ranking_loss(
     mag = d_true.abs()
     mag = mag / (mag[valid].mean().detach() + 1e-6)
     weight = mag
-    if pair_weights is not None:
-        # pair_weights: [R,R] sign-independent frequency weights
+    if pair_weights_pos is not None and pair_weights_neg is not None:
+        w_pos = pair_weights_pos.to(device=scores_hat.device, dtype=scores_hat.dtype)
+        w_neg = pair_weights_neg.to(device=scores_hat.device, dtype=scores_hat.dtype)
+        signed_w = torch.where(sign > 0, w_pos.unsqueeze(0), w_neg.unsqueeze(0))
+        weight = weight * signed_w
+    elif pair_weights is not None:
+        # Legacy scalar pair weight (sign-agnostic); prefer pos/neg API.
         pw = pair_weights.to(device=scores_hat.device, dtype=scores_hat.dtype)
         weight = weight * pw.unsqueeze(0)
     return (pair * weight)[valid].mean()
@@ -109,6 +116,8 @@ def refinement_gain_total_loss(
     rank_ignore_margin: float = 0.02,
     rank_temperature: float = 0.05,
     pair_weights: torch.Tensor | None = None,
+    pair_weights_pos: torch.Tensor | None = None,
+    pair_weights_neg: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     l_abs = absolute_gain_loss(gains_hat, gains_true)
     l_center = across_sample_centered_gain_loss(gains_hat, gains_true)
@@ -133,8 +142,9 @@ def refinement_gain_total_loss(
         rank_ignore_margin=rank_ignore_margin,
         rank_temperature=rank_temperature,
         pair_weights=pair_weights,
+        pair_weights_pos=pair_weights_pos,
+        pair_weights_neg=pair_weights_neg,
     )
-    # full true = g3 + g36 by construction of targets
     full_true = gains_true[:, 0] + gains_true[:, 2]
     l_full = full_route_consistency_loss(gains_hat[:, 0], gains_hat[:, 2], full_true)
     total = (
@@ -161,8 +171,13 @@ def compute_pair_imbalance_weights(
     rank_ignore_margin: float = 0.02,
     max_pair_weight: float = 5.0,
     use_sqrt: bool = True,
-) -> tuple[torch.Tensor, dict[str, Any]]:
-    """Inverse-frequency weights over route-pair preference signs."""
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+    """Sign-specific inverse-frequency pair weights.
+
+    Returns:
+        w_pos, w_neg: [R,R] — used when (score_i - score_j) is positive / negative.
+        report: counts and weights for diagnostics.
+    """
     r = scores_true.shape[-1]
     pos = torch.zeros(r, r)
     neg = torch.zeros(r, r)
@@ -172,31 +187,53 @@ def compute_pair_imbalance_weights(
             mask = d.abs() >= float(rank_ignore_margin)
             pos[i, j] = (d[mask] > 0).sum()
             neg[i, j] = (d[mask] < 0).sum()
+            # Opposite unordered orientation
             pos[j, i] = neg[i, j]
             neg[j, i] = pos[i, j]
-    weights = torch.ones(r, r)
-    report = {}
+    w_pos = torch.ones(r, r)
+    w_neg = torch.ones(r, r)
+    report: dict[str, Any] = {}
+    collected = []
     for i in range(r):
         for j in range(i):
             p = float(pos[i, j].item())
             n = float(neg[i, j].item())
             total = p + n
             if total <= 0:
-                w = 1.0
+                wp = wn = 1.0
             else:
-                # weight minority direction higher via harmonic-style factor
-                freq_min = min(p, n) / total
-                inv = 1.0 / max(freq_min, 1e-3)
-                w = inv**0.5 if use_sqrt else inv
-                w = min(w, float(max_pair_weight))
-            weights[i, j] = w
-            weights[j, i] = w
+                raw_p = total / max(2.0 * p, 1e-6)
+                raw_n = total / max(2.0 * n, 1e-6)
+                wp = (raw_p**0.5) if use_sqrt else raw_p
+                wn = (raw_n**0.5) if use_sqrt else raw_n
+            # Clip before mean-normalization so zero-count extremes cannot
+            # inflate the mean and collapse all other pair weights.
+            wp = min(wp, float(max_pair_weight))
+            wn = min(wn, float(max_pair_weight))
+            collected.append(wp)
+            collected.append(wn)
+            w_pos[i, j] = wp
+            w_neg[i, j] = wn
+            w_pos[j, i] = wn
+            w_neg[j, i] = wp
             report[f"{j}<{i}"] = {
                 "pos_count": p,
                 "neg_count": n,
-                "weight": w,
+                "w_pos_raw": wp,
+                "w_neg_raw": wn,
             }
-    return weights, report
+    mean_w = float(sum(collected) / max(len(collected), 1))
+    if mean_w > 0:
+        w_pos = w_pos / mean_w
+        w_neg = w_neg / mean_w
+    w_pos = w_pos.clamp(max=float(max_pair_weight))
+    w_neg = w_neg.clamp(max=float(max_pair_weight))
+    for i in range(r):
+        for j in range(i):
+            key = f"{j}<{i}"
+            report[key]["w_pos"] = float(w_pos[i, j].item())
+            report[key]["w_neg"] = float(w_neg[i, j].item())
+    return w_pos, w_neg, report
 
 
 @torch.no_grad()
