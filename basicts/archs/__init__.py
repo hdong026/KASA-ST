@@ -25,6 +25,7 @@ from .arch_zoo.ChainForecasting_arch import BudgetConditionedRouteQualityF2FNet
 from .arch_zoo.ChainForecasting_arch import RouteQualityEstimator
 from .arch_zoo.ChainForecasting_arch import AdaptiveForecastRefinementRouteNet
 from .arch_zoo.ChainForecasting_arch import ForecastRefinementGainController
+from .arch_zoo.ForecastTrajectorySimple_arch import ForecastTrajectorySimple
 from .arch_zoo.ForecastStateFlow_arch import ForecastStateFlow
 from .arch_zoo.STForecastStateFlow_arch import STForecastStateFlow
 from .arch_zoo.TFSTGN_arch import TFSTGN
@@ -54,6 +55,7 @@ __all__ = ["STID", "GraphWaveNet", "DCRNN",
            "RouteQualityEstimator",
            "AdaptiveForecastRefinementRouteNet",
            "ForecastRefinementGainController",
+           "ForecastTrajectorySimple",
            "ForecastStateFlow", "STForecastStateFlow", "TFSTGN", "KASA_v3", "KASA_v3_FreqGate", "KASA_v2_wo_spectral",
            "KASA_v2_wo_KAN", "KASA_v2_wo_GCN", "KASA_v2_w_bspline",
            "STAEformer", "STWave", "STDN", "HimNet", "MultiscaleMLP", "SpectralMixLSTNN"]

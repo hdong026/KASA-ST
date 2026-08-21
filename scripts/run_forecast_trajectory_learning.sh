@@ -60,6 +60,12 @@ if [[ -z "$MODE" ]]; then
   exit 2
 fi
 
+if [[ -f results/forecast_trajectory_run/formal_seed1/V1_STOPPED_SCIENTIFICALLY_INVALID.json ]]; then
+  echo "V1 is SCIENTIFICALLY INVALID and must NOT be resumed."
+  echo "Use: bash scripts/run_forecast_trajectory_v2.sh --acceptance-1epoch|--full --gpu 0 --seed 1"
+  exit 2
+fi
+
 # Prefer an environment that already has torch; otherwise activate conda env basicts.
 if ! python -c "import torch" >/dev/null 2>&1; then
   if [[ -f "${HOME}/miniconda3/etc/profile.d/conda.sh" ]]; then
